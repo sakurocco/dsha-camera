@@ -79,7 +79,7 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': '若打开的是「安全访问 / 相册」，点左上角的相机图标可直接拍；注意系统相机会自己往相册存一份，插件无法阻止。',
         'camera.label': '摄像头',
         'camera.auto': '自动选择',
-        'fps.hint': '取景画面每秒真实刷新的次数；低于 12 说明在掉帧',
+        'fps.hint': '三个数字：呈现 / 解码 / 界面（每秒帧数）。呈现低而解码高＝播放器被降频；两个都低＝相机没在送帧',
         'flush': '刷新画面（只重建播放器，不重开相机）',
         'stage.tapFlush': '轻点画面可重建播放器（不重开相机），用来清掉积压的帧',
         'retry': '重试',
@@ -113,7 +113,7 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': 'If the album opens instead, tap the camera tile in its top-left corner to shoot — and note the system camera app keeps its own copy in the album.',
         'camera.label': 'Camera',
         'camera.auto': 'Automatic',
-        'fps.hint': 'Real refresh rate of the viewfinder; below 12 means it is dropping frames',
+        'fps.hint': 'Three numbers: presented / decoded / UI frames per second. Low presented with high decoded means the player is throttled; both low means the camera is not sending frames',
         'flush': 'Refresh the preview (rebuilds the player only, the camera stays open)',
         'stage.tapFlush': 'Tap the preview to rebuild the player (the camera stays open) and drop queued frames',
         'retry': 'Retry',
@@ -783,8 +783,9 @@ window.__ModuleLoader__.load({
         [attempt, deviceId, facing, sessionId],
       )
 
-      // 实时帧率读数：rVFC 每秒回调几次，就是取景画面真正刷新了几次。
-      const [fps, setFps] = useState(0)
+      // 三项读数：呈现帧率 / 解码帧率 / 界面刷新率。
+      // 呈现低而解码高 → 播放器或合成层在降频；两项都低 → 相机根本没在送帧。
+      const [meter, setMeter] = useState({ v: 0, q: -1, u: 0 })
       const [flushing, setFlushing] = useState(0)
 
       /**
@@ -814,32 +815,60 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      // 每秒读一次「采集→显示」的真实延迟：rVFC 的 mediaTime 与 performance.now()
-      // 同一时基，差值就是这一帧从采集到呈现花掉的时间。
+      // 每秒统计一次：呈现（rVFC）、解码（getVideoPlaybackQuality）、界面（rAF）。
       useEffect(
         function () {
           if (phase !== 'live') return undefined
           const video = videoRef.current
           if (!video || typeof video.requestVideoFrameCallback !== 'function') return undefined
-          let frames = 0
+          let presented = 0
+          let ui = 0
           let handle = 0
+          let rafHandle = 0
+          let lastTotal = -1
           let last = performance.now()
           const tick = function () {
-            frames += 1
+            presented += 1
             handle = video.requestVideoFrameCallback(tick)
           }
+          const uiTick = function () {
+            ui += 1
+            rafHandle = requestAnimationFrame(uiTick)
+          }
           handle = video.requestVideoFrameCallback(tick)
+          rafHandle = requestAnimationFrame(uiTick)
           const timer = setInterval(function () {
             const now = performance.now()
             const seconds = Math.max(0.001, (now - last) / 1000)
-            const measured = frames / seconds
-            frames = 0
+            const presentedRate = presented / seconds
+            const uiRate = ui / seconds
+            let decodedRate = -1
+            if (typeof video.getVideoPlaybackQuality === 'function') {
+              const quality = video.getVideoPlaybackQuality()
+              const total = quality && typeof quality.totalVideoFrames === 'number'
+                ? quality.totalVideoFrames
+                : -1
+              if (total >= 0 && lastTotal >= 0 && total >= lastTotal) {
+                decodedRate = (total - lastTotal) / seconds
+              }
+              lastTotal = total
+            }
+            presented = 0
+            ui = 0
             last = now
-            setFps(Math.round(measured))
+            setMeter({
+              v: Math.round(presentedRate),
+              q: decodedRate < 0 ? -1 : Math.round(decodedRate),
+              u: Math.round(uiRate),
+            })
             try {
               console.log(
-                '[dsha-camera] fps=' +
-                  measured.toFixed(1) +
+                '[dsha-camera] presented=' +
+                  presentedRate.toFixed(1) +
+                  ' decoded=' +
+                  (decodedRate < 0 ? 'n/a' : decodedRate.toFixed(1)) +
+                  ' ui=' +
+                  uiRate.toFixed(1) +
                   ' size=' +
                   video.videoWidth +
                   'x' +
@@ -854,6 +883,7 @@ window.__ModuleLoader__.load({
             if (handle && typeof video.cancelVideoFrameCallback === 'function') {
               video.cancelVideoFrameCallback(handle)
             }
+            if (rafHandle) cancelAnimationFrame(rafHandle)
           }
         },
         [phase],
@@ -1011,14 +1041,14 @@ window.__ModuleLoader__.load({
             h('span', { className: 'dsha-cam-title' }, t('panel.title')),
             h('span', { className: 'dsha-cam-hint' }, t('panel.hint')),
           ),
-          fps > 0
+          meter.v > 0
             ? h(
                 'span',
                 {
-                  className: 'dsha-cam-lag' + (fps < 12 ? ' is-slow' : ''),
+                  className: 'dsha-cam-lag' + (meter.v < 12 ? ' is-slow' : ''),
                   title: t('fps.hint'),
                 },
-                fps + ' fps',
+                meter.v + ' / ' + (meter.q >= 0 ? meter.q : '–') + ' / ' + meter.u,
               )
             : null,
           h(
@@ -1149,18 +1179,24 @@ window.__ModuleLoader__.load({
             disabled: !live || busy,
             onClick: shoot,
           }),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'dsha-cam-iconBtn is-wide is-flush',
-              'aria-label': t('flush'),
-              title: t('flush'),
-              disabled: !live,
-              onClick: flushPreview,
-            },
-            h(IconRefresh, { size: 20 }),
-          ),
+          devices.length > 1
+            ? h('span', { className: 'dsha-cam-spacer', 'aria-hidden': true })
+            : h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dsha-cam-iconBtn is-wide',
+                  'aria-label': t('flip'),
+                  title: t('flip'),
+                  disabled: !live,
+                  onClick: function () {
+                    setFacing(function (current) {
+                      return current === 'environment' ? 'user' : 'environment'
+                    })
+                  },
+                },
+                h(IconSwitch, { size: 19 }),
+              ),
         ),
         errorKey
           ? h(
