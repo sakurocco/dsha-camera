@@ -145,6 +145,7 @@ dsha-camera/
 
 ## 更新记录
 
+- **1.0.5** —— 取景面板重做：关闭键改成 40px 独立按钮（点顶部抓手也能关）、面板按 `100dvh` 布局避免底部被系统栏裁掉；快门从 52px 放大到 72px；预览参数从 1920×1440 降到 1280×960@30，解决手机上取景卡顿。
 - **1.0.4** —— 修掉 1.0.1 引入的 props 透传 bug：相机按钮的槽位包装只把 `ctx`/`sessionId` 传给了组件，丢掉了 `inputActions` 和 `useInput`，导致所有平台都报「没有暴露附件接口」。现在两个 prop 都会透传；粘贴兜底的元素选择器也放宽到任意 `contenteditable`。
 - **1.0.3** —— 「加入草稿」更不容易失败：输入框忙碌时自动重试 3 次；仍被拒绝、或宿主没把 `inputActions` 交给插件时，改走输入框自己的粘贴通道（带附件数量校验）；失败提示里会写出**当时的输入状态**，方便定位。
 - **1.0.2** —— 修正隐私措辞：只有内嵌取景框路径不落盘；系统相机回退由相机 App 写入相册，插件无法阻止。面板里补了对应提示。
@@ -254,6 +255,7 @@ Editing needs no build: change `client.js`, reload the page. Tune `MAX_EDGE` and
 
 ### Changelog
 
+- **1.0.5** — sheet rework: a dedicated 40px close button (the grabber closes too), a `100dvh` layer so the footer is no longer clipped by the system bars, a 72px shutter, and a 1280×960@30 preview instead of 1920×1440 to stop the phone dropping frames.
 - **1.0.4** — fixed a props-forwarding bug introduced in 1.0.1: the camera button's slot wrapper passed only `ctx`/`sessionId` and dropped `inputActions` and `useInput`, so every delivery reported "no attachment API" on every platform. Both props are forwarded again, and the paste fallback now matches any `contenteditable`.
 - **1.0.3** — harder to fail on the way into the draft: three retries while the composer is busy; when it still refuses, or when the host never passes `inputActions` to the slot, the file goes through the composer's own paste intake (confirmed by the attachment count). A failure now names the composer phase it saw.
 - **1.0.2** — corrected the privacy wording: only the inline viewfinder path avoids local writes; the system-camera fallback is stored by the camera app, which the plugin cannot prevent. The panel now says so.
