@@ -1,6 +1,6 @@
 # dsha-camera · DSHA 拍照直传
 
-> 在 DeepSeek Harness 的输入框里直接拍照，照片进草稿，不进相册。
+> 在 DeepSeek Harness 的输入框里直接拍照，直接省去退出DSHA打开相机的步骤。
 > Shoot straight into the composer draft of DeepSeek Harness — never into the album.
 
 <p>
