@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="DSHA Camera">
+  <defs>
+    <linearGradient id="dsha-camera-bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2f86cf"/>
+      <stop offset="1" stop-color="#1b5d99"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#dsha-camera-bg)"/>
+  <path d="M14 25.5h7.2l3.4-5.2h14.8l3.4 5.2H50a3.2 3.2 0 0 1 3.2 3.2v15.6A3.2 3.2 0 0 1 50 47.5H14a3.2 3.2 0 0 1-3.2-3.2V28.7A3.2 3.2 0 0 1 14 25.5Z" fill="#ffffff" fill-opacity="0.16" stroke="#ffffff" stroke-width="2.6" stroke-linejoin="round"/>
+  <circle cx="32" cy="36" r="8.2" fill="none" stroke="#ffffff" stroke-width="2.8"/>
+  <circle cx="32" cy="36" r="3.1" fill="#ffffff"/>
+  <circle cx="47" cy="29.6" r="1.9" fill="#ffffff"/>
+</svg>

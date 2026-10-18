@@ -1,0 +1,22 @@
+# Dependencies and build output (this plugin ships none)
+node_modules/
+dist/
+build/
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and local scratch
+*.log
+npm-debug.log*
+pnpm-debug.log*
+*.tgz
+*.zip
+
+# Local secrets, if anyone ever puts one here
+.env
+.env.*

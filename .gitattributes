@@ -1,0 +1,8 @@
+# Normalize line endings so the package works the same on Android, Linux and Windows.
+* text=auto eol=lf
+
+# Ship these as binary-safe assets.
+*.svg text eol=lf
+*.png binary
+*.jpg binary
+*.webp binary

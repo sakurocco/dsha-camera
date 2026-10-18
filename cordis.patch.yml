@@ -1,0 +1,6 @@
+# dsha-camera bundle patch: one Host row over the Web or Desktop profile.
+# The row name must equal the package name: the Loader resolves it from the
+# profile's own node_modules, where the plugin manager installed this package.
+- insert:
+    - id: dsha-camera
+      name: dsha-camera
