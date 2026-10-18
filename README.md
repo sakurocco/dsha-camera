@@ -24,7 +24,7 @@
 - 📷 **加号右侧的相机按钮** —— 就长在输入工具行里，不会多出一个悬浮球。
 - 🪟 **底部抽屉式取景框，不接管全屏** —— 面板从屏幕底部滑出、背景压暗，取景框是中间一条，聊天记录仍看得见；点遮罩、`Esc` 或 ✕ 立刻关闭。
 - 🖼️ **照片直接进草稿** —— 走 Harness 自己的附件通道（`createDrafts` + `addAttachments`），可以和文字、其他图片混排，连拍多张也行。
-- 🚫 **不写入相册 / 下载目录 / 临时文件** —— 帧只在内存里编码成 `File`，发送后由 Harness 作为会话附件保管（模型能看见图片的前提），设备相册全程零增长。
+- 🚫 **内嵌取景框路径不写相册、下载目录或临时文件** —— 帧只在内存里编码成 `File`，发送后由 Harness 作为会话附件保管（模型能看见图片的前提）。注意：走「系统相机」回退时，拍照与落盘由相机 App / 宿主选择器完成，它们会自己存一份到相册，插件既不知道也无法删除，详见下文。
 - 🧩 **双通道自适应** —— 宿主允许摄像头时用内嵌取景框；不允许时（例如当前 DSHA，见下文）同面板自动换成「系统相机 / 相册」，功能不断。
 - 🌏 **中英双语**，跟随 Harness 语言；深浅色跟随主题 token。
 - ⚡ **零构建** —— 纯浏览器 JS，没有打包、没有依赖、没有安装脚本，装完刷新即可用。
@@ -106,6 +106,8 @@ dsh plugin --profile desktop add dsha-camera
 
 **「系统相机」为什么有时先打开相册**：网页请求系统相机只有 `<input type="file" accept="image/*" capture="environment">` 这一条路，`capture` 只是给宿主的一个提示。DSHA 的 WebView 会把这类请求交给它自己的照片选择器（那个页面的左上角有相机入口，点一下就能拍）。是否**直接**拉起相机由宿主的 `onShowFileChooser` / `isCaptureEnabled()` 决定，网页侧无法强制；要一步到位，需要 DSHA 处理 `isCaptureEnabled`，或者补上 `CAMERA` 权限让内嵌取景框可用。
 
+**为什么用系统相机拍完，相册里会多一张**：回退路径下，照片是**相机 App 先写进 MediaStore（相册）**，再把文件交给网页的。网页拿到的只是一个 `File` 对象，既看不到、也删不掉磁盘上那一份；把插件卸载掉再拍，照样会多一张。这是相机 App / 宿主选择器的行为。想让系统相机路径也不落盘，需要宿主用 `ACTION_IMAGE_CAPTURE` + `EXTRA_OUTPUT` 指到 `cacheDir` 的临时文件、读完即删（部分厂商相机即使给了 `EXTRA_OUTPUT` 仍会自存一份，只有内嵌取景框能彻底绕开）。
+
 **为什么按钮在「加号右侧」但不一定紧贴加号**：Harness 的 `+` 是宿主硬编码的按钮，它右侧唯一可扩展的座位是 `conversation.input.left`，宿主会把它渲染在附件 / 权限 / 计划控件之后。手机上这些控件通常折叠，视觉上就紧邻加号；桌面窄窗口下可能隔着权限选择器。
 
 ## 它是怎么实现的（给想改它的人）
@@ -137,6 +139,7 @@ dsha-camera/
 
 ## 更新记录
 
+- **1.0.2** —— 修正隐私措辞：只有内嵌取景框路径不落盘；系统相机回退由相机 App 写入相册，插件无法阻止。面板里补了对应提示。
 - **1.0.1** —— 面板从「输入框上方插槽」改为「整窗浮层 + 底部抽屉」，修复手机上快门被输入区裁掉；补「相册里点左上角相机图标」的提示；「系统相机」在桌面端隐藏（那里它只是文件选择器）。
 - **1.0.0** —— 首个版本：加号右侧相机按钮、取景面板、照片直入草稿、中英双语。
 
@@ -194,7 +197,7 @@ Sending "what I'm looking at" to the agent currently costs six steps: open the c
 - 📷 **Camera button beside `+`** — part of the composer tool row, no floating bubble.
 - 🪟 **Bottom-sheet viewfinder, not a takeover** — the panel rises from the bottom edge over a scrim; the viewfinder is a bounded band, not the whole screen, and a tap on the scrim, `Esc` or ✕ closes it.
 - 🖼️ **Straight into the draft** — through Harness's own attachment path (`createDrafts` + `addAttachments`), so it mixes with text and other images, and you can shoot several in a row.
-- 🚫 **Nothing written to the album, Downloads or a temp file** — the frame is encoded in memory as a `File`; after you press send, Harness stores it as a session attachment (that is what lets the model see it).
+- 🚫 **Nothing written to the album on the inline path** — the frame is encoded in memory as a `File`; after you press send, Harness stores it as a session attachment (that is what lets the model see it). The system-camera fallback is different: the camera app and the host picker do the capture and the writing, keep their own copy in the album, and the plugin can neither see nor delete it — see below.
 - 🧩 **Dual-channel fallback** — hosts that grant camera access get the inline viewfinder; hosts that don't (e.g. current DSHA, see below) get the system camera / album inside the same panel.
 - 🌏 **Bilingual** copy that follows the Harness locale, with light/dark handled by theme tokens.
 - ⚡ **No build** — plain browser JavaScript, no bundler, no dependency, no install script.
@@ -219,6 +222,8 @@ Sending "what I'm looking at" to the agent currently costs six steps: open the c
 
 **Why "system camera" sometimes opens the album first**: the only web-level request for the device camera is `<input type="file" accept="image/*" capture="environment">`, and `capture` is only a hint. DSHA's WebView routes that request to its own photo picker, which carries a camera tile in its top-left corner. Whether the host launches the camera directly is decided by its `onShowFileChooser` / `isCaptureEnabled()`, so a page cannot force it: a one-tap camera needs DSHA to honour `isCaptureEnabled`, or to grant `CAMERA` so the inline viewfinder works.
 
+**Why the system camera leaves a copy in the album**: on the fallback path the camera app writes the photo into MediaStore first and only then hands the file to the page. The page receives a `File` object and can neither see nor delete the copy on disk — uninstall the plugin, take the same photo, and the album still grows. Removing that write needs the host to use `ACTION_IMAGE_CAPTURE` with `EXTRA_OUTPUT` pointing at a `cacheDir` temp file and delete it after reading (some vendor cameras keep their own copy anyway; only the inline viewfinder avoids the camera app entirely).
+
 ### How it works
 
 ```
@@ -234,6 +239,7 @@ Editing needs no build: change `client.js`, reload the page. Tune `MAX_EDGE` and
 
 ### Changelog
 
+- **1.0.2** — corrected the privacy wording: only the inline viewfinder path avoids local writes; the system-camera fallback is stored by the camera app, which the plugin cannot prevent. The panel now says so.
 - **1.0.1** — the panel moved from the composer dock to a frame-wide overlay bottom sheet, fixing the shutter being clipped by the composer on phones; added the "tap the camera tile in the album" hint; hid the system-camera pill on desktop, where it is only a file dialog.
 - **1.0.0** — first release: camera button beside `+`, capture sheet, photo straight into the draft, bilingual copy.
 
