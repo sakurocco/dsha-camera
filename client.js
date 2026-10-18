@@ -48,18 +48,12 @@ window.__ModuleLoader__.load({
     const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
     /** Remembered camera device for this browser origin. */
     const DEVICE_KEY = 'dsha-camera:device'
-    /** Remembered preview preset. */
-    const QUALITY_KEY = 'dsha-camera:quality'
     /**
-     * Preview presets. A phone WebView cannot composite 1280×960@30 and keep up:
-     * Chromium queues the frames it cannot paint, so the picture starts smooth
-     * and settles at about one second of latency. `smooth` keeps the queue
-     * empty; a still is taken at a higher resolution on demand instead.
+     * Preview is fixed at one preset: resolution experiments did not change the
+     * accumulated lag, so the remaining suspects are on the presentation path
+     * (occlusion, rounded clipping, scroll containers), not the frame size.
      */
-    const PREVIEW_PRESETS = {
-      smooth: { width: 640, height: 480, fps: 24 },
-      sharp: { width: 1280, height: 960, fps: 24 },
-    }
+    const PREVIEW_PRESET = { width: 1280, height: 960, fps: 30 }
     /** Resolution requested for one still, then reverted to the preview preset. */
     const STILL_CONSTRAINTS = { width: { ideal: 1920 }, height: { ideal: 1440 } }
 
@@ -85,10 +79,6 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': '若打开的是「安全访问 / 相册」，点左上角的相机图标可直接拍；注意系统相机会自己往相册存一份，插件无法阻止。',
         'camera.label': '摄像头',
         'camera.auto': '自动选择',
-        'quality.label': '预览清晰度',
-        'quality.smooth': '流畅',
-        'quality.sharp': '清晰',
-        'quality.hint': '流畅模式预览不积压；清晰模式画面更细，若又开始延迟就切回来',
         'retry': '重试',
         'copyAddress': '复制地址',
         'copied': '已复制',
@@ -120,10 +110,6 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': 'If the album opens instead, tap the camera tile in its top-left corner to shoot — and note the system camera app keeps its own copy in the album.',
         'camera.label': 'Camera',
         'camera.auto': 'Automatic',
-        'quality.label': 'Preview quality',
-        'quality.smooth': 'Smooth',
-        'quality.sharp': 'Sharp',
-        'quality.hint': 'Smooth keeps the frame queue empty; Sharp shows more detail and may lag again',
         'retry': 'Retry',
         'copyAddress': 'Copy address',
         'copied': 'Copied',
@@ -436,14 +422,13 @@ window.__ModuleLoader__.load({
     }
 
     /** Put the track back on the preview preset after a capture attempt. */
-    function restorePreviewConstraints(track, quality) {
+    function restorePreviewConstraints(track) {
       if (!track || typeof track.applyConstraints !== 'function') return
-      const preset = PREVIEW_PRESETS[quality] || PREVIEW_PRESETS.smooth
       try {
         const pending = track.applyConstraints({
-          width: { ideal: preset.width },
-          height: { ideal: preset.height },
-          frameRate: { ideal: preset.fps, max: preset.fps + 6 },
+          width: { ideal: PREVIEW_PRESET.width },
+          height: { ideal: PREVIEW_PRESET.height },
+          frameRate: { ideal: PREVIEW_PRESET.fps, max: PREVIEW_PRESET.fps + 6 },
         })
         if (pending && typeof pending.catch === 'function') pending.catch(function () {})
       } catch (error) {
@@ -473,23 +458,6 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** Remembered preview preset, 'smooth' when nothing was chosen yet. */
-    function readPreferredQuality() {
-      try {
-        const stored = window.localStorage.getItem(QUALITY_KEY)
-        return stored && PREVIEW_PRESETS[stored] ? stored : 'smooth'
-      } catch (error) {
-        return 'smooth'
-      }
-    }
-
-    function writePreferredQuality(quality) {
-      try {
-        window.localStorage.setItem(QUALITY_KEY, quality)
-      } catch (error) {
-        // Same fallback as the device choice.
-      }
-    }
 
     /**
      * The Electron desktop shell installs a media permission handler that
@@ -695,7 +663,6 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [devices, setDevices] = useState([])
       const [deviceId, setDeviceId] = useState(readPreferredDevice)
-      const [quality, setQuality] = useState(readPreferredQuality)
       const [attempt, setAttempt] = useState(0)
       const [copied, setCopied] = useState(false)
 
@@ -719,14 +686,11 @@ window.__ModuleLoader__.load({
           setPhase('starting')
           setDetail('')
 
-          // 预览优先流畅。手机 WebView 合成不了 1280×960@30 时，Chromium 会把
-          // 画不完的帧排队，于是"先顺、几秒后固定滞后约 1 秒"。降低预览负载即可
-          // 让队列保持为空；按快门时再临时把轨道提到高分辨率取一张静止图。
-          const preset = PREVIEW_PRESETS[quality] || PREVIEW_PRESETS.smooth
+          // 预览固定一档。分辨率实验已证明不是根因，剩下的怀疑都在呈现路径上。
           const previewConstraints = {
-            width: { ideal: preset.width },
-            height: { ideal: preset.height },
-            frameRate: { ideal: preset.fps, max: preset.fps + 6 },
+            width: { ideal: PREVIEW_PRESET.width },
+            height: { ideal: PREVIEW_PRESET.height },
+            frameRate: { ideal: PREVIEW_PRESET.fps, max: PREVIEW_PRESET.fps + 6 },
           }
           const videoConstraints = deviceId
             ? { deviceId: { exact: deviceId }, ...previewConstraints }
@@ -789,7 +753,52 @@ window.__ModuleLoader__.load({
             streamRef.current = null
           }
         },
-        [attempt, deviceId, facing, quality, sessionId],
+        [attempt, deviceId, facing, sessionId],
+      )
+
+      // 诊断：每秒把真实渲染帧率打到 console，手机端可用 `adb logcat -s chromium:V` 抓。
+      // 帧率随时间下滑 → 呈现/合成路径；帧率稳定但画面滞后 → 采集端缓冲。
+      useEffect(
+        function () {
+          if (phase !== 'live') return undefined
+          const video = videoRef.current
+          if (!video || typeof video.requestVideoFrameCallback !== 'function') return undefined
+          let frames = 0
+          let handle = 0
+          let last = performance.now()
+          const tick = function () {
+            frames += 1
+            handle = video.requestVideoFrameCallback(tick)
+          }
+          handle = video.requestVideoFrameCallback(tick)
+          const timer = setInterval(function () {
+            const now = performance.now()
+            const seconds = Math.max(0.001, (now - last) / 1000)
+            try {
+              console.log(
+                '[dsha-camera] fps=' +
+                  (frames / seconds).toFixed(1) +
+                  ' size=' +
+                  video.videoWidth +
+                  'x' +
+                  video.videoHeight +
+                  ' ready=' +
+                  video.readyState,
+              )
+            } catch (error) {
+              // Logging must never disturb the preview.
+            }
+            frames = 0
+            last = now
+          }, 1000)
+          return function () {
+            clearInterval(timer)
+            if (handle && typeof video.cancelVideoFrameCallback === 'function') {
+              video.cancelVideoFrameCallback(handle)
+            }
+          }
+        },
+        [phase],
       )
 
       // Escape closes the panel before anything else consumes it.
@@ -841,11 +850,11 @@ window.__ModuleLoader__.load({
           code = 'error.encode'
         } finally {
           setBusy(false)
-          restorePreviewConstraints(track, quality)
+          restorePreviewConstraints(track)
         }
         if (code === 'ok') onClose()
         else setDetail(code)
-      }, [busy, ctx, facing, inputActions, onClose, phase, quality, sessionId])
+      }, [busy, ctx, facing, inputActions, onClose, phase, sessionId])
 
       const pickFiles = useCallback(
         async function (event) {
@@ -879,14 +888,6 @@ window.__ModuleLoader__.load({
         setDetail('')
         writePreferredDevice(next)
         setDeviceId(next)
-      }, [])
-
-      const toggleQuality = useCallback(function () {
-        setQuality(function (current) {
-          const next = current === 'smooth' ? 'sharp' : 'smooth'
-          writePreferredQuality(next)
-          return next
-        })
       }, [])
 
       const retry = useCallback(function () {
@@ -981,17 +982,6 @@ window.__ModuleLoader__.load({
                 }),
               )
             : h('span', { className: 'dsha-cam-devicesLabel' }, t('camera.label')),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'dsha-cam-quality',
-              'aria-label': t('quality.label'),
-              title: t('quality.hint'),
-              onClick: toggleQuality,
-            },
-            quality === 'smooth' ? t('quality.smooth') : t('quality.sharp'),
-          ),
         ),
         h(
           'div',
@@ -1002,6 +992,8 @@ window.__ModuleLoader__.load({
             autoPlay: true,
             playsInline: true,
             muted: true,
+            disablePictureInPicture: true,
+            disableRemotePlayback: true,
           }),
           phase === 'live'
             ? null
@@ -1248,9 +1240,9 @@ window.__ModuleLoader__.load({
       '.dsha-cam-trigger:hover{background:var(--dsw-alias-interactive-bg-hover-solid,var(--dsw-alias-bg-layer-2))}',
       '.dsha-cam-trigger[aria-pressed="true"]{color:var(--dsw-alias-brand-primary)}',
       '.dsha-cam-trigger:focus-visible,.dsha-cam-iconBtn:focus-visible,.dsha-cam-pill:focus-visible,.dsha-cam-shutter:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}',
-      '.dsha-cam-layer{position:fixed;left:0;right:0;top:0;height:100vh;height:100dvh;z-index:1000;display:flex;align-items:flex-end;justify-content:center;pointer-events:auto}',
-      '.dsha-cam-scrim{position:absolute;inset:0;background:rgba(0,0,0,.42)}',
-      '.dsha-cam-sheet{position:relative;z-index:1;box-sizing:border-box;width:100%;max-width:640px;max-height:100%;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,#e5e6eb);border-bottom:none;border-radius:18px 18px 0 0;box-shadow:0 -10px 36px rgba(0,0,0,.32);overflow-y:auto;overscroll-behavior:contain}',
+      '.dsha-cam-layer{position:fixed;left:0;right:0;top:0;height:100vh;height:100dvh;z-index:1000;display:flex;align-items:flex-end;justify-content:center;pointer-events:auto;background:#0b0c0f}',
+      '.dsha-cam-scrim{position:absolute;inset:0;background:transparent}',
+      '.dsha-cam-sheet{position:relative;z-index:1;box-sizing:border-box;width:100%;max-width:640px;max-height:100%;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,#e5e6eb);border-bottom:none;border-radius:18px 18px 0 0;box-shadow:0 -10px 36px rgba(0,0,0,.32);overflow:hidden}',
       '.dsha-cam-grabber{position:relative;display:block;width:100%;height:22px;flex:none;margin:0;background:transparent;cursor:pointer}',
       '.dsha-cam-grabber::after{content:"";position:absolute;left:50%;top:9px;transform:translateX(-50%);width:44px;height:5px;border-radius:999px;background:var(--dsw-alias-border-l2,#d9dbe0)}',
       '.dsha-cam-head{display:flex;align-items:center;gap:10px;flex:none;min-height:44px;padding:2px 14px 6px}',
@@ -1260,16 +1252,14 @@ window.__ModuleLoader__.load({
       '.dsha-cam-headText{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}',
       '.dsha-cam-title{font-size:14px;font-weight:600;line-height:19px;color:var(--dsw-alias-label-primary,#111)}',
       '.dsha-cam-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary,#6b7280);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-      '.dsha-cam-devices{display:flex;align-items:center;gap:8px;flex:none;padding:0 12px 8px}',
-      '.dsha-cam-devicesLabel{flex:none;font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary)}',
+      '.dsha-cam-devices{display:flex;align-items:center;gap:8px;flex:none;padding:0 12px 8px}',      '.dsha-cam-devicesLabel{flex:none;font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary)}',
       '.dsha-cam-select{flex:1 1 auto;min-width:0;height:28px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1,#e5e6eb);border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-primary,#111);font-size:12px;cursor:pointer}',
-      '.dsha-cam-quality{flex:none;margin-left:auto;height:28px;padding:0 12px;border:1px solid var(--dsw-alias-border-l1,#e5e6eb);border-radius:999px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-primary,#111);font-size:12px;cursor:pointer}',
       '.dsha-cam-spacer{width:44px;height:44px;flex:none}',
       '.dsha-cam-iconBtn{width:28px;height:28px;flex:none;display:grid;place-items:center;padding:0;border:none;border-radius:999px;background:none;color:var(--dsw-alias-label-secondary,#6b7280);cursor:pointer;margin-left:auto}',
       '.dsha-cam-iconBtn.is-wide{width:44px;height:44px;margin-left:0}',
       '.dsha-cam-iconBtn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
       '.dsha-cam-iconBtn:disabled{opacity:.4;cursor:default}',
-      '.dsha-cam-stage{position:relative;flex:0 1 auto;margin:2px 10px 0;height:min(46vh,420px);min-height:120px;border-radius:12px;overflow:hidden;background:#0a0c10}',
+      '.dsha-cam-stage{position:relative;flex:0 1 auto;margin:2px 10px 0;height:min(46vh,420px);min-height:120px;background:#0a0c10}',
       '.dsha-cam-video{width:100%;height:100%;display:block;object-fit:cover;background:#0a0c10;transform:translateZ(0)}',
       '.dsha-cam-video.is-mirrored{transform:translateZ(0) scaleX(-1)}',
       '.dsha-cam-stage[data-phase="starting"] .dsha-cam-video,.dsha-cam-stage[data-phase="blocked"] .dsha-cam-video,.dsha-cam-stage[data-phase="unsupported"] .dsha-cam-video{visibility:hidden}',

@@ -145,6 +145,7 @@ dsha-camera/
 
 ## 更新记录
 
+- **1.0.7** —— 分辨率不是根因，去掉「流畅/清晰」切换，预览统一 1280×960@30；改从**呈现路径**排查：浮层底改为不透明（合成器可做遮挡剔除，不再每帧混合背后的整页）、取景区去掉圆角裁剪（每帧少一次遮罩）、面板不再是滚动容器；并在 console 每秒输出真实渲染帧率，可用 `adb logcat -s chromium:V` 抓取。
 - **1.0.6** —— 延迟根治：预览改为低负载预设（流畅 640×480@24 / 清晰 1280×960@24，面板里一键切换并记住），按快门时才临时把轨道提到 1920×1440 取静帧。原因是手机 WebView 合成不了高分辨率流时，Chromium 会排队画不完的视频帧，表现就是「一开始顺、几秒后固定滞后约 1 秒」。
 - **1.0.5** —— 取景面板重做：关闭键改成 40px 独立按钮（点顶部抓手也能关）、面板按 `100dvh` 布局避免底部被系统栏裁掉；快门从 52px 放大到 72px；预览参数从 1920×1440 降到 1280×960@30，解决手机上取景卡顿。
 - **1.0.4** —— 修掉 1.0.1 引入的 props 透传 bug：相机按钮的槽位包装只把 `ctx`/`sessionId` 传给了组件，丢掉了 `inputActions` 和 `useInput`，导致所有平台都报「没有暴露附件接口」。现在两个 prop 都会透传；粘贴兜底的元素选择器也放宽到任意 `contenteditable`。
@@ -256,6 +257,7 @@ Editing needs no build: change `client.js`, reload the page. Tune `MAX_EDGE` and
 
 ### Changelog
 
+- **1.0.7** — resolution was not the cause: the Smooth/Sharp switch is gone and the preview is fixed at 1280×960@30. The investigation moved to the presentation path — the layer is now opaque (the compositor can cull the page behind instead of blending it every frame), the stage no longer clips with rounded corners (one mask less per frame), and the sheet is no longer a scroll container. The preview also logs its real render rate once per second for `adb logcat -s chromium:V`.
 - **1.0.6** — latency fix: the preview now runs a low-load preset (Smooth 640×480@24 / Sharp 1280×960@24, toggled in the sheet and remembered), and the track is bumped to 1920×1440 only while a still is grabbed. Reason: when a phone WebView cannot composite the stream, Chromium queues the frames it cannot paint, which shows up as "smooth at first, then a fixed ~1 s lag".
 - **1.0.5** — sheet rework: a dedicated 40px close button (the grabber closes too), a `100dvh` layer so the footer is no longer clipped by the system bars, a 72px shutter, and a 1280×960@30 preview instead of 1920×1440 to stop the phone dropping frames.
 - **1.0.4** — fixed a props-forwarding bug introduced in 1.0.1: the camera button's slot wrapper passed only `ctx`/`sessionId` and dropped `inputActions` and `useInput`, so every delivery reported "no attachment API" on every platform. Both props are forwarded again, and the paste fallback now matches any `contenteditable`.
