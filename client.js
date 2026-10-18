@@ -79,7 +79,8 @@ window.__ModuleLoader__.load({
         'reason.busy': '摄像头被其他程序占用',
         'reason.unknown': '无法打开摄像头',
         'error.bridge': '没找到会话的附件接口，请确认 Harness 版本不低于 0.2.0-rc.2',
-        'error.locked': '当前不可追加附件（正在发送），请稍后再拍',
+        'error.locked': '输入框暂时不接受附件（状态：{phase}），等这次发送结束后再试。',
+        'error.api': '当前 Harness 没有向插件暴露附件接口，照片没能放进输入框。',
         'error.encode': '这一帧编码失败，请重试',
         'error.type': '只支持 JPEG / PNG / WebP / GIF 图片',
         'error.session': '当前没有可用的会话',
@@ -109,7 +110,8 @@ window.__ModuleLoader__.load({
         'reason.busy': 'Another app is using the camera',
         'reason.unknown': 'The camera could not be opened',
         'error.bridge': 'The draft attachment API is missing; Harness 0.2.0-rc.2 or newer is required',
-        'error.locked': 'Attachments cannot be added right now (a message is being sent)',
+        'error.locked': 'The composer is not accepting attachments right now (phase: {phase}). Try again once the current send settles.',
+        'error.api': 'This Harness build does not expose the attachment API to plugins, so the photo could not be placed in the draft.',
         'error.encode': 'This frame could not be encoded, please try again',
         'error.type': 'Only JPEG / PNG / WebP / GIF images are supported',
         'error.session': 'No session is available',
@@ -180,6 +182,10 @@ window.__ModuleLoader__.load({
       open: false,
       sessionId: undefined,
       inputActions: undefined,
+      /** Live composer phase, kept current while the sheet is open. */
+      phase: undefined,
+      /** Draft attachment count, used to confirm the paste fallback landed. */
+      attachments: 0,
       listeners: new Set(),
     }
 
@@ -193,10 +199,12 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function openSheet(sessionId, inputActions) {
+    function openSheet(sessionId, inputActions, phase, attachments) {
       SHEET.open = true
       SHEET.sessionId = sessionId
       SHEET.inputActions = inputActions
+      SHEET.phase = phase
+      SHEET.attachments = attachments
       publishSheet()
     }
 
@@ -250,11 +258,68 @@ window.__ModuleLoader__.load({
       return 'error.bridge'
     }
 
+    function delay(ms) {
+      return new Promise(function (resolve) {
+        setTimeout(resolve, ms)
+      })
+    }
+
+    /**
+     * Hand one file to the composer's own paste intake. The Harness wires that
+     * handler itself, so it keeps working even when a slot does not receive the
+     * `inputActions` prop (a mobile shell that re-declares the composer, for
+     * example). The dispatched event is a real ClipboardEvent carrying one
+     * file; the handler's `preventDefault()` is the acceptance signal.
+     */
+    async function pasteIntoComposer(file) {
+      try {
+        if (typeof DataTransfer !== 'function') return false
+        const editor =
+          document.querySelector('[data-lexical-editor="true"]') ||
+          document.querySelector('[contenteditable="true"]')
+        if (!editor) return false
+        const transfer = new DataTransfer()
+        transfer.items.add(file)
+        let event
+        try {
+          event = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: transfer,
+          })
+        } catch (error) {
+          event = new Event('paste', { bubbles: true, cancelable: true })
+        }
+        if (!event.clipboardData) {
+          Object.defineProperty(event, 'clipboardData', { value: transfer, configurable: true })
+        }
+        const before = typeof SHEET.attachments === 'number' ? SHEET.attachments : 0
+        editor.dispatchEvent(event)
+        if (event.defaultPrevented !== true) return false
+        // The handler consumes the event even when its own intake refuses, so
+        // confirmation is the draft's attachment count actually growing.
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          await delay(80)
+          if (typeof SHEET.attachments === 'number' && SHEET.attachments > before) return true
+        }
+        return false
+      } catch (error) {
+        return false
+      }
+    }
+
     /**
      * Stage one browser `File` as a draft attachment of the active Session.
+     *
+     * The shell's `addAttachments` refuses while a submission is adjudicating or
+     * flying, so a refusal is retried briefly before giving up. If the action
+     * face is missing entirely, or every retry is refused, the file is handed to
+     * the composer's own paste intake instead: that path is wired by the Harness
+     * itself and stays independent of the props a slot happens to receive.
+     *
      * @returns 'ok' on success, otherwise a copy key describing the failure.
      */
-    function deliverToDraft(ctx, sessionId, inputActions, file) {
+    async function deliverToDraft(ctx, sessionId, inputActions, file) {
       if (typeof sessionId !== 'string' || sessionId.length === 0) return 'error.session'
       const conversation = conversationOf(ctx)
       if (!conversation || typeof conversation.createDrafts !== 'function') return 'error.bridge'
@@ -275,15 +340,17 @@ window.__ModuleLoader__.load({
         return 'error.bridge'
       }
 
-      const accepted =
-        inputActions && typeof inputActions.addAttachments === 'function'
-          ? inputActions.addAttachments(ids)
-          : false
-      if (accepted === false) {
-        releaseDrafts(ctx, drafts)
-        return 'error.locked'
+      const canAppend = inputActions && typeof inputActions.addAttachments === 'function'
+      if (canAppend) {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          if (inputActions.addAttachments(ids)) return 'ok'
+          await delay(250)
+        }
       }
-      return 'ok'
+
+      releaseDrafts(ctx, drafts)
+      if (await pasteIntoComposer(file)) return 'ok'
+      return canAppend ? 'error.locked' : 'error.api'
     }
 
     // ---------------------------------------------------------------------
@@ -660,7 +727,7 @@ window.__ModuleLoader__.load({
         let code = 'ok'
         try {
           const file = await encodeFrame(video, facing === 'user')
-          code = deliverToDraft(ctx, sessionId, inputActions, file)
+          code = await deliverToDraft(ctx, sessionId, inputActions, file)
         } catch (error) {
           code = 'error.encode'
         } finally {
@@ -671,7 +738,7 @@ window.__ModuleLoader__.load({
       }, [busy, ctx, facing, inputActions, onClose, phase, sessionId])
 
       const pickFiles = useCallback(
-        function (event) {
+        async function (event) {
           const input = event.currentTarget
           const files = Array.prototype.slice.call(input.files || [])
           input.value = ''
@@ -682,7 +749,7 @@ window.__ModuleLoader__.load({
             setDetail('error.type')
             return
           }
-          const code = deliverToDraft(ctx, sessionId, inputActions, file)
+          const code = await deliverToDraft(ctx, sessionId, inputActions, file)
           if (code === 'ok') onClose()
           else setDetail(code)
         },
@@ -733,6 +800,12 @@ window.__ModuleLoader__.load({
       const failureKey = detail || 'stage.blocked'
       const showFailure = phase !== 'live' && phase !== 'starting'
       const errorKey = detail.indexOf('error.') === 0 ? detail : ''
+      // `error.locked` names the composer phase it saw, so a stuck shell is
+      // reported as a phase instead of a vague "please retry".
+      const failureVars =
+        failureKey === 'error.locked' || errorKey === 'error.locked'
+          ? { phase: SHEET.phase || 'unknown' }
+          : undefined
 
       return h(
         'section',
@@ -808,7 +881,7 @@ window.__ModuleLoader__.load({
                     ? t('stage.starting')
                     : phase === 'unsupported'
                       ? t('stage.unsupported')
-                      : t(failureKey),
+                      : t(failureKey, failureVars),
                 ),
                 showFailure
                   ? h('p', { className: 'dsha-cam-stageText is-dim' }, t('stage.useFallback'))
@@ -896,7 +969,11 @@ window.__ModuleLoader__.load({
               ),
         ),
         errorKey
-          ? h('p', { className: 'dsha-cam-error', role: 'alert' }, t(errorKey))
+          ? h(
+              'p',
+              { className: 'dsha-cam-error', role: 'alert' },
+              t(errorKey, failureVars),
+            )
           : null,
         h('input', {
           ref: systemInputRef,
@@ -936,6 +1013,23 @@ window.__ModuleLoader__.load({
       )
       const sheet = useSheet()
 
+      // Live composer phase: the shell refuses attachments while it adjudicates
+      // or submits, and that refusal is otherwise indistinguishable from a
+      // missing action face.
+      const useInput = props.useInput
+      const phase =
+        typeof useInput === 'function'
+          ? useInput(function (state) {
+              return state && state.phase
+            })
+          : undefined
+      const attachments =
+        typeof useInput === 'function'
+          ? useInput(function (state) {
+              return state && state.attachmentIds ? state.attachmentIds.length : 0
+            })
+          : 0
+
       // Switching Session closes a sheet that belongs to the previous one.
       useEffect(
         function () {
@@ -944,13 +1038,31 @@ window.__ModuleLoader__.load({
         [sessionId],
       )
 
+      // Keep the sheet's copy of the inputs as fresh as the composer itself.
+      useEffect(
+        function () {
+          if (!SHEET.open || SHEET.sessionId !== sessionId) return
+          SHEET.phase = phase
+          SHEET.attachments = typeof attachments === 'number' ? attachments : 0
+        },
+        [attachments, phase, sessionId],
+      )
+
+      useEffect(
+        function () {
+          if (!SHEET.open || SHEET.sessionId !== sessionId) return
+          if (props.inputActions) SHEET.inputActions = props.inputActions
+        },
+        [props.inputActions, sessionId],
+      )
+
       const open = sheet.open && sheet.sessionId === sessionId
       const toggle = useCallback(
         function () {
           if (SHEET.open && SHEET.sessionId === sessionId) closeSheet()
-          else openSheet(sessionId, props.inputActions)
+          else openSheet(sessionId, props.inputActions, phase, attachments)
         },
-        [props.inputActions, sessionId],
+        [attachments, phase, props.inputActions, sessionId],
       )
 
       return h(

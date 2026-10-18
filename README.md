@@ -139,6 +139,7 @@ dsha-camera/
 
 ## 更新记录
 
+- **1.0.3** —— 「加入草稿」更不容易失败：输入框忙碌时自动重试 3 次；仍被拒绝、或宿主没把 `inputActions` 交给插件时，改走输入框自己的粘贴通道（带附件数量校验）；失败提示里会写出**当时的输入状态**，方便定位。
 - **1.0.2** —— 修正隐私措辞：只有内嵌取景框路径不落盘；系统相机回退由相机 App 写入相册，插件无法阻止。面板里补了对应提示。
 - **1.0.1** —— 面板从「输入框上方插槽」改为「整窗浮层 + 底部抽屉」，修复手机上快门被输入区裁掉；补「相册里点左上角相机图标」的提示；「系统相机」在桌面端隐藏（那里它只是文件选择器）。
 - **1.0.0** —— 首个版本：加号右侧相机按钮、取景面板、照片直入草稿、中英双语。
@@ -239,6 +240,7 @@ Editing needs no build: change `client.js`, reload the page. Tune `MAX_EDGE` and
 
 ### Changelog
 
+- **1.0.3** — harder to fail on the way into the draft: three retries while the composer is busy; when it still refuses, or when the host never passes `inputActions` to the slot, the file goes through the composer's own paste intake (confirmed by the attachment count). A failure now names the composer phase it saw.
 - **1.0.2** — corrected the privacy wording: only the inline viewfinder path avoids local writes; the system-camera fallback is stored by the camera app, which the plugin cannot prevent. The panel now says so.
 - **1.0.1** — the panel moved from the composer dock to a frame-wide overlay bottom sheet, fixing the shutter being clipped by the composer on phones; added the "tap the camera tile in the album" hint; hid the system-camera pill on desktop, where it is only a file dialog.
 - **1.0.0** — first release: camera button beside `+`, capture sheet, photo straight into the draft, bilingual copy.
