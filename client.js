@@ -48,6 +48,20 @@ window.__ModuleLoader__.load({
     const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
     /** Remembered camera device for this browser origin. */
     const DEVICE_KEY = 'dsha-camera:device'
+    /** Remembered preview preset. */
+    const QUALITY_KEY = 'dsha-camera:quality'
+    /**
+     * Preview presets. A phone WebView cannot composite 1280×960@30 and keep up:
+     * Chromium queues the frames it cannot paint, so the picture starts smooth
+     * and settles at about one second of latency. `smooth` keeps the queue
+     * empty; a still is taken at a higher resolution on demand instead.
+     */
+    const PREVIEW_PRESETS = {
+      smooth: { width: 640, height: 480, fps: 24 },
+      sharp: { width: 1280, height: 960, fps: 24 },
+    }
+    /** Resolution requested for one still, then reverted to the preview preset. */
+    const STILL_CONSTRAINTS = { width: { ideal: 1920 }, height: { ideal: 1440 } }
 
     // ---------------------------------------------------------------------
     // Copy
@@ -71,6 +85,10 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': '若打开的是「安全访问 / 相册」，点左上角的相机图标可直接拍；注意系统相机会自己往相册存一份，插件无法阻止。',
         'camera.label': '摄像头',
         'camera.auto': '自动选择',
+        'quality.label': '预览清晰度',
+        'quality.smooth': '流畅',
+        'quality.sharp': '清晰',
+        'quality.hint': '流畅模式预览不积压；清晰模式画面更细，若又开始延迟就切回来',
         'retry': '重试',
         'copyAddress': '复制地址',
         'copied': '已复制',
@@ -102,6 +120,10 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': 'If the album opens instead, tap the camera tile in its top-left corner to shoot — and note the system camera app keeps its own copy in the album.',
         'camera.label': 'Camera',
         'camera.auto': 'Automatic',
+        'quality.label': 'Preview quality',
+        'quality.smooth': 'Smooth',
+        'quality.sharp': 'Sharp',
+        'quality.hint': 'Smooth keeps the frame queue empty; Sharp shows more detail and may lag again',
         'retry': 'Retry',
         'copyAddress': 'Copy address',
         'copied': 'Copied',
@@ -373,6 +395,62 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Resolve on the next delivered frame, or after `ms` at the latest. */
+    function waitForFrame(video, ms) {
+      return new Promise(function (resolve) {
+        let settled = false
+        const finish = function () {
+          if (settled) return
+          settled = true
+          resolve()
+        }
+        const timer = setTimeout(finish, ms)
+        if (video && typeof video.requestVideoFrameCallback === 'function') {
+          video.requestVideoFrameCallback(function () {
+            clearTimeout(timer)
+            finish()
+          })
+        } else {
+          clearTimeout(timer)
+          finish()
+        }
+      })
+    }
+
+    /**
+     * Ask the camera for one high-resolution frame right before a still is
+     * drawn. The preview itself runs at the low-latency preset; bumping the
+     * track for a moment keeps the photo sharp without paying the queue cost
+     * all the time.
+     */
+    async function boostTrackForStill(track, video) {
+      if (!track || typeof track.applyConstraints !== 'function') return
+      try {
+        const settings = typeof track.getSettings === 'function' ? track.getSettings() : {}
+        if ((settings.width || 0) >= 1600) return
+        await track.applyConstraints(STILL_CONSTRAINTS)
+        await waitForFrame(video, 400)
+      } catch (error) {
+        // A camera that refuses the bump still yields the preview frame.
+      }
+    }
+
+    /** Put the track back on the preview preset after a capture attempt. */
+    function restorePreviewConstraints(track, quality) {
+      if (!track || typeof track.applyConstraints !== 'function') return
+      const preset = PREVIEW_PRESETS[quality] || PREVIEW_PRESETS.smooth
+      try {
+        const pending = track.applyConstraints({
+          width: { ideal: preset.width },
+          height: { ideal: preset.height },
+          frameRate: { ideal: preset.fps, max: preset.fps + 6 },
+        })
+        if (pending && typeof pending.catch === 'function') pending.catch(function () {})
+      } catch (error) {
+        // Restoring is best effort; the sheet closes right after a capture.
+      }
+    }
+
     function pad(value) {
       return String(value).padStart(2, '0')
     }
@@ -392,6 +470,24 @@ window.__ModuleLoader__.load({
         else window.localStorage.removeItem(DEVICE_KEY)
       } catch (error) {
         // Private mode or a blocked storage partition: the choice stays in memory.
+      }
+    }
+
+    /** Remembered preview preset, 'smooth' when nothing was chosen yet. */
+    function readPreferredQuality() {
+      try {
+        const stored = window.localStorage.getItem(QUALITY_KEY)
+        return stored && PREVIEW_PRESETS[stored] ? stored : 'smooth'
+      } catch (error) {
+        return 'smooth'
+      }
+    }
+
+    function writePreferredQuality(quality) {
+      try {
+        window.localStorage.setItem(QUALITY_KEY, quality)
+      } catch (error) {
+        // Same fallback as the device choice.
       }
     }
 
@@ -417,8 +513,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function timestampName() {
-      const now = new Date()
+    function timestampName() {      const now = new Date()
       return (
         'camera-' +
         now.getFullYear() +
@@ -600,6 +695,7 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [devices, setDevices] = useState([])
       const [deviceId, setDeviceId] = useState(readPreferredDevice)
+      const [quality, setQuality] = useState(readPreferredQuality)
       const [attempt, setAttempt] = useState(0)
       const [copied, setCopied] = useState(false)
 
@@ -623,12 +719,14 @@ window.__ModuleLoader__.load({
           setPhase('starting')
           setDetail('')
 
-          // 预览优先流畅：1280×960@30 足够看清取景，1920×1440 在手机 WebView 上
-          // 往往掉到个位数帧率，手感就是"卡"。真正拍照时再按 MAX_EDGE 缩放。
+          // 预览优先流畅。手机 WebView 合成不了 1280×960@30 时，Chromium 会把
+          // 画不完的帧排队，于是"先顺、几秒后固定滞后约 1 秒"。降低预览负载即可
+          // 让队列保持为空；按快门时再临时把轨道提到高分辨率取一张静止图。
+          const preset = PREVIEW_PRESETS[quality] || PREVIEW_PRESETS.smooth
           const previewConstraints = {
-            width: { ideal: 1280 },
-            height: { ideal: 960 },
-            frameRate: { ideal: 30, max: 30 },
+            width: { ideal: preset.width },
+            height: { ideal: preset.height },
+            frameRate: { ideal: preset.fps, max: preset.fps + 6 },
           }
           const videoConstraints = deviceId
             ? { deviceId: { exact: deviceId }, ...previewConstraints }
@@ -691,7 +789,7 @@ window.__ModuleLoader__.load({
             streamRef.current = null
           }
         },
-        [attempt, deviceId, facing, sessionId],
+        [attempt, deviceId, facing, quality, sessionId],
       )
 
       // Escape closes the panel before anything else consumes it.
@@ -733,17 +831,21 @@ window.__ModuleLoader__.load({
         setBusy(true)
         setDetail('')
         let code = 'ok'
+        const track = streamRef.current ? streamRef.current.getVideoTracks()[0] : undefined
         try {
+          // 取静帧前临时把轨道提到高分辨率；预览流一直是低负载的。
+          await boostTrackForStill(track, video)
           const file = await encodeFrame(video, facing === 'user')
           code = await deliverToDraft(ctx, sessionId, inputActions, file)
         } catch (error) {
           code = 'error.encode'
         } finally {
           setBusy(false)
+          restorePreviewConstraints(track, quality)
         }
         if (code === 'ok') onClose()
         else setDetail(code)
-      }, [busy, ctx, facing, inputActions, onClose, phase, sessionId])
+      }, [busy, ctx, facing, inputActions, onClose, phase, quality, sessionId])
 
       const pickFiles = useCallback(
         async function (event) {
@@ -777,6 +879,14 @@ window.__ModuleLoader__.load({
         setDetail('')
         writePreferredDevice(next)
         setDeviceId(next)
+      }, [])
+
+      const toggleQuality = useCallback(function () {
+        setQuality(function (current) {
+          const next = current === 'smooth' ? 'sharp' : 'smooth'
+          writePreferredQuality(next)
+          return next
+        })
       }, [])
 
       const retry = useCallback(function () {
@@ -853,12 +963,11 @@ window.__ModuleLoader__.load({
             h(IconClose, { size: 18 }),
           ),
         ),
-        devices.length > 1
-          ? h(
-              'div',
-              { className: 'dsha-cam-devices' },
-              h('span', { className: 'dsha-cam-devicesLabel' }, t('camera.label')),
-              h(
+        h(
+          'div',
+          { className: 'dsha-cam-devices' },
+          devices.length > 1
+            ? h(
                 'select',
                 {
                   className: 'dsha-cam-select',
@@ -870,9 +979,20 @@ window.__ModuleLoader__.load({
                 devices.map(function (device) {
                   return h('option', { key: device.id, value: device.id }, device.label)
                 }),
-              ),
-            )
-          : null,
+              )
+            : h('span', { className: 'dsha-cam-devicesLabel' }, t('camera.label')),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dsha-cam-quality',
+              'aria-label': t('quality.label'),
+              title: t('quality.hint'),
+              onClick: toggleQuality,
+            },
+            quality === 'smooth' ? t('quality.smooth') : t('quality.sharp'),
+          ),
+        ),
         h(
           'div',
           { className: 'dsha-cam-stage', 'data-phase': phase },
@@ -1142,14 +1262,15 @@ window.__ModuleLoader__.load({
       '.dsha-cam-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary,#6b7280);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.dsha-cam-devices{display:flex;align-items:center;gap:8px;flex:none;padding:0 12px 8px}',
       '.dsha-cam-devicesLabel{flex:none;font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary)}',
-      '.dsha-cam-select{flex:1;min-width:0;height:26px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer}',
+      '.dsha-cam-select{flex:1 1 auto;min-width:0;height:28px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1,#e5e6eb);border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-primary,#111);font-size:12px;cursor:pointer}',
+      '.dsha-cam-quality{flex:none;margin-left:auto;height:28px;padding:0 12px;border:1px solid var(--dsw-alias-border-l1,#e5e6eb);border-radius:999px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-primary,#111);font-size:12px;cursor:pointer}',
       '.dsha-cam-spacer{width:44px;height:44px;flex:none}',
       '.dsha-cam-iconBtn{width:28px;height:28px;flex:none;display:grid;place-items:center;padding:0;border:none;border-radius:999px;background:none;color:var(--dsw-alias-label-secondary,#6b7280);cursor:pointer;margin-left:auto}',
       '.dsha-cam-iconBtn.is-wide{width:44px;height:44px;margin-left:0}',
       '.dsha-cam-iconBtn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
       '.dsha-cam-iconBtn:disabled{opacity:.4;cursor:default}',
       '.dsha-cam-stage{position:relative;flex:0 1 auto;margin:2px 10px 0;height:min(46vh,420px);min-height:120px;border-radius:12px;overflow:hidden;background:#0a0c10}',
-      '.dsha-cam-video{width:100%;height:100%;display:block;object-fit:cover;background:#0a0c10;transform:translateZ(0);backface-visibility:hidden}',
+      '.dsha-cam-video{width:100%;height:100%;display:block;object-fit:cover;background:#0a0c10;transform:translateZ(0)}',
       '.dsha-cam-video.is-mirrored{transform:translateZ(0) scaleX(-1)}',
       '.dsha-cam-stage[data-phase="starting"] .dsha-cam-video,.dsha-cam-stage[data-phase="blocked"] .dsha-cam-video,.dsha-cam-stage[data-phase="unsupported"] .dsha-cam-video{visibility:hidden}',
       '.dsha-cam-stageNote{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px;text-align:center}',
