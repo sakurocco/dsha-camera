@@ -80,6 +80,7 @@ window.__ModuleLoader__.load({
         'camera.label': '摄像头',
         'camera.auto': '自动选择',
         'fps.hint': '取景画面每秒真实刷新的次数；低于 12 说明在掉帧',
+        'flush': '刷新画面（只重建播放器，不重开相机）',
         'stage.tapFlush': '轻点画面可重建播放器（不重开相机），用来清掉积压的帧',
         'retry': '重试',
         'copyAddress': '复制地址',
@@ -113,6 +114,7 @@ window.__ModuleLoader__.load({
         'camera.label': 'Camera',
         'camera.auto': 'Automatic',
         'fps.hint': 'Real refresh rate of the viewfinder; below 12 means it is dropping frames',
+        'flush': 'Refresh the preview (rebuilds the player only, the camera stays open)',
         'stage.tapFlush': 'Tap the preview to rebuild the player (the camera stays open) and drop queued frames',
         'retry': 'Retry',
         'copyAddress': 'Copy address',
@@ -643,6 +645,27 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function IconRefresh(props) {
+      const size = props && props.size ? props.size : 16
+      return h(
+        'svg',
+        svgProps(size),
+        h('path', {
+          d: 'M13.1 8.4a5.1 5.1 0 1 1-1.5-4.1',
+          stroke: 'currentColor',
+          strokeWidth: 1.3,
+          strokeLinecap: 'round',
+        }),
+        h('path', {
+          d: 'M13.4 3.2v3.6H9.8',
+          stroke: 'currentColor',
+          strokeWidth: 1.3,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+        }),
+      )
+    }
+
     // ---------------------------------------------------------------------
     // Capture panel
     // ---------------------------------------------------------------------
@@ -970,6 +993,7 @@ window.__ModuleLoader__.load({
           'aria-label': t('panel.title'),
           'data-phase': phase,
         },
+        h('span', { className: 'dsha-cam-keepalive', 'aria-hidden': true }),
         h('div', {
           className: 'dsha-cam-grabber',
           role: 'button',
@@ -1125,24 +1149,18 @@ window.__ModuleLoader__.load({
             disabled: !live || busy,
             onClick: shoot,
           }),
-          devices.length > 1
-            ? h('span', { className: 'dsha-cam-spacer', 'aria-hidden': true })
-            : h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'dsha-cam-iconBtn is-wide',
-                  'aria-label': t('flip'),
-                  title: t('flip'),
-                  disabled: !live,
-                  onClick: function () {
-                    setFacing(function (current) {
-                      return current === 'environment' ? 'user' : 'environment'
-                    })
-                  },
-                },
-                h(IconSwitch, { size: 19 }),
-              ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dsha-cam-iconBtn is-wide is-flush',
+              'aria-label': t('flush'),
+              title: t('flush'),
+              disabled: !live,
+              onClick: flushPreview,
+            },
+            h(IconRefresh, { size: 20 }),
+          ),
         ),
         errorKey
           ? h(
@@ -1309,11 +1327,12 @@ window.__ModuleLoader__.load({
       '.dsha-cam-spacer{width:44px;height:44px;flex:none}',
       '.dsha-cam-iconBtn{width:28px;height:28px;flex:none;display:grid;place-items:center;padding:0;border:none;border-radius:999px;background:none;color:var(--dsw-alias-label-secondary,#6b7280);cursor:pointer;margin-left:auto}',
       '.dsha-cam-iconBtn.is-wide{width:44px;height:44px;margin-left:0}',
+      '.dsha-cam-iconBtn.is-flush{background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-primary,#111);border:1px solid var(--dsw-alias-border-l1,#e5e6eb)}',
       '.dsha-cam-iconBtn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
       '.dsha-cam-iconBtn:disabled{opacity:.4;cursor:default}',
       '.dsha-cam-stage{position:relative;flex:0 1 auto;margin:2px 10px 0;height:min(46vh,420px);min-height:120px;background:#0a0c10}',
-      '.dsha-cam-video{width:100%;height:100%;display:block;object-fit:cover;background:#0a0c10;transform:translateZ(0)}',
-      '.dsha-cam-video.is-mirrored{transform:translateZ(0) scaleX(-1)}',
+      '.dsha-cam-video{width:100%;height:100%;display:block;object-fit:cover;background:#0a0c10}',
+      '.dsha-cam-video.is-mirrored{transform:scaleX(-1)}',
       '.dsha-cam-stage[data-phase="starting"] .dsha-cam-video,.dsha-cam-stage[data-phase="blocked"] .dsha-cam-video,.dsha-cam-stage[data-phase="unsupported"] .dsha-cam-video{visibility:hidden}',
       '.dsha-cam-stageNote{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px;text-align:center}',
       '.dsha-cam-stageText{margin:0;max-width:34ch;font-size:12.5px;line-height:19px;color:#ccd2dc}',
@@ -1322,8 +1341,10 @@ window.__ModuleLoader__.load({
       '.dsha-cam-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(255,255,255,.08);color:#eef1f6;font-size:12px;line-height:16px;cursor:pointer}',
       '.dsha-cam-pill:hover{background:rgba(255,255,255,.16)}',
       '.dsha-cam-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:12px 22px calc(16px + env(safe-area-inset-bottom,0px))}',
-      '.dsha-cam-shutter{width:74px;height:74px;flex:none;display:grid;place-items:center;padding:0;border:4px solid var(--dsw-alias-border-l2);border-radius:50%;background:var(--dsw-alias-bg-layer-2);cursor:pointer}',
-      '.dsha-cam-shutter::after{content:"";display:block;width:54px;height:54px;border-radius:50%;background:var(--dsw-alias-label-primary)}',
+      '.dsha-cam-shutter{width:74px;height:74px;flex:none;display:grid;place-items:center;padding:0;border:4px solid var(--dsw-alias-border-l2,#d9dbe0);border-radius:999px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);cursor:pointer}',
+      '.dsha-cam-shutter::after{content:"";display:block;width:54px;height:54px;border-radius:999px;background:var(--dsw-alias-label-primary,#111)}',
+      '.dsha-cam-keepalive{position:absolute;left:1px;top:1px;width:2px;height:2px;border-radius:2px;background:rgba(0,0,0,.02);pointer-events:none;animation:dsha-cam-tick 1s linear infinite}',
+      '@keyframes dsha-cam-tick{0%{transform:translate3d(0,0,0)}50%{transform:translate3d(0,1px,0)}100%{transform:translate3d(0,0,0)}}',
       '.dsha-cam-shutter:hover:not(:disabled)::after{transform:scale(.94)}',
       '.dsha-cam-shutter:disabled{opacity:.45;cursor:default}',
       '.dsha-cam-error{margin:0 12px 10px;font-size:12px;line-height:17px;color:var(--dsw-alias-state-error-primary)}',

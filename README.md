@@ -145,6 +145,7 @@ dsha-camera/
 
 ## 更新记录
 
+- **1.0.10** —— 快门恢复圆形（`border-radius:50%` 在部分 WebView 失效，改 `999px`）；底部右侧新增明确的**刷新按钮**（只重建播放器、不重开相机）；另加一个 1px 的合成器保活动画，避免页面静止后视频被 Chromium 按“后台”降到 1 fps。
 - **1.0.9** —— 换成可验证的诊断：标题右侧显示**取景画面每秒真实刷新次数**（低于 12 变橙），**轻点取景区**即可重建播放器（只重挂 `srcObject`，不重开相机）清掉积压帧，用来区分「播放器积压」和「相机侧丢帧」。
 - **1.0.8** —— 面板标题右侧显示**实测延迟**（`requestVideoFrameCallback` 的 `mediaTime` 与 `performance.now()` 的差值），超过 600ms 连续 3 秒就自动重建播放器冲掉积压帧（不重开相机，每次至少间隔 8 秒）。依据：`adb` 采样显示渲染进程几乎空闲、相机 HAL 占 92% 且出现 `VideoCaptureCamera2` 锁竞争，说明积压发生在采集→呈现链路而不是我们的绘制。
 - **1.0.7** —— 分辨率不是根因，去掉「流畅/清晰」切换，预览统一 1280×960@30；改从**呈现路径**排查：浮层底改为不透明（合成器可做遮挡剔除，不再每帧混合背后的整页）、取景区去掉圆角裁剪（每帧少一次遮罩）、面板不再是滚动容器；并在 console 每秒输出真实渲染帧率，可用 `adb logcat -s chromium:V` 抓取。
@@ -259,6 +260,7 @@ Editing needs no build: change `client.js`, reload the page. Tune `MAX_EDGE` and
 
 ### Changelog
 
+- **1.0.10** — the shutter is a circle again (`border-radius:50%` silently fails in some WebViews, `999px` works), the footer gained an explicit **refresh button** (rebuilds the player only, the camera stays open), and a 1 px compositor keep-alive animation stops Chromium from demoting the video to its 1 fps background tick.
 - **1.0.9** — verifiable diagnosis: the header shows the **viewfinder's real refresh rate** (orange below 12), and **tapping the preview** rebuilds the player (re-attaching `srcObject` only; the camera stays open) to drop queued frames, telling player-side backlog apart from camera-side drops.
 - **1.0.8** — the sheet header now shows the **measured latency** (`requestVideoFrameCallback`'s `mediaTime` against `performance.now()`), and when it stays above 600 ms for three seconds the player is rebuilt to drop queued frames (the camera is not reopened; at most once per 8 s). Basis: `adb` sampling showed the renderer nearly idle while the camera HAL sat at 92 % with `VideoCaptureCamera2` lock contention, so the backlog is in the capture-to-presentation path, not our drawing.
 - **1.0.7** — resolution was not the cause: the Smooth/Sharp switch is gone and the preview is fixed at 1280×960@30. The investigation moved to the presentation path — the layer is now opaque (the compositor can cull the page behind instead of blending it every frame), the stage no longer clips with rounded corners (one mask less per frame), and the sheet is no longer a scroll container. The preview also logs its real render rate once per second for `adb logcat -s chromium:V`.
