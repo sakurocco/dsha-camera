@@ -4,13 +4,14 @@
 > Shoot straight into the composer draft of DeepSeek Harness — never into the album.
 
 <p>
+  <a href="https://www.npmjs.com/package/dsha-camera"><img alt="npm" src="https://img.shields.io/npm/v/dsha-camera?color=cb3837"></a>
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="dsh" src="https://img.shields.io/badge/dsh-%E2%89%A50.2.0--rc.2-4c6ef5">
   <img alt="build" src="https://img.shields.io/badge/build-none-brightgreen">
   <img alt="lang" src="https://img.shields.io/badge/i18n-中文%20%7C%20English-2f9e44">
 </p>
 
-简体中文 · [English](#english)
+简体中文 · [English](#english) · [更新记录](CHANGELOG.md)
 
 ---
 
@@ -53,26 +54,31 @@
 ### 方式一：DSHA 插件市场（安卓，推荐）
 
 1. 在 DSHA 里打开「插件」→ 添加插件；
-2. 粘贴仓库地址（`https://github.com/sakurocco/dsha-camera`）或 Release 里的 zip；
+2. 粘贴仓库地址（`https://github.com/sakurocco/dsha-camera`）、npm 包名 `dsha-camera`，或 Release 里的 zip；
 3. 安装完成后按提示重启 Web，刷新页面。
 
 DSHA 会自己完成解压、依赖检查与启用，不需要命令行。
 
-### 方式二：桌面 / 命令行
+### 方式二：npm 包
+
+```bash
+# 桌面版 Harness
+dsh plugin --profile <你的 profile> add dsha-camera
+
+# DSHA 终端里
+dsha-plugin install dsha-camera
+```
+
+也可以先 `npm i dsha-camera` 再用目录方式安装（`files` 字段已列出会发布的全部文件，包内没有构建产物）。
+
+### 方式三：本地目录 / 手动放进 profile
 
 ```bash
 # 指向本地目录（开发时最方便，改完刷新页面即可）
 dsh plugin --profile desktop add /path/to/dsha-camera
-
-# 或者从 npm 装（发布之后）
-dsh plugin --profile desktop add dsha-camera
 ```
 
-也可以把它放进工作区，用 `plugin_manager` 的 `install_bundle` 安装（target 传本目录的绝对路径）。
-
-### 方式三：手动放进 profile
-
-把本目录整体复制到 `~/.dsh/profiles/<profile>/node_modules/dsha-camera`，然后在 `cordis.patch.yml` 里加：
+或把本目录整体复制到 `~/.dsh/profiles/<profile>/node_modules/dsha-camera`，然后在 `cordis.patch.yml` 里加：
 
 ```yaml
 - insert:
@@ -163,22 +169,29 @@ git remote add origin https://github.com/sakurocco/dsha-camera.git
 git push -u origin main
 ```
 
-打一个 Release（DSHA 支持直接装 zip）：
+## 发版与发布（维护者）
+
+仓库：<https://github.com/sakurocco/dsha-camera>
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
-# 在 GitHub → Releases → Draft a new release 里选择该 tag，
-# 附件上传整个仓库 zip（或 npm pack 产物 dsha-camera-1.0.0.tgz）
+cd dsha-camera
+git add .
+git commit -m "feat: ..."
+git tag v1.0.5
+git push origin main --tags
 ```
 
-发 npm（可选，方便 `dsh plugin add dsha-camera`）：
+然后在 GitHub → **Releases** → Draft a new release 里选这个 tag，正文贴 `CHANGELOG.md` 对应段落，附件挂 `dsha-camera-x.y.z.zip`（用 `git archive --format=zip -o ../dsha-camera-x.y.z.zip HEAD` 生成，只含被跟踪的文件）。
+
+发布到 npm（首次需要 `npm login`，浏览器授权一次即可）：
 
 ```bash
-npm publish --access public     # 包名被占用时改成 @YOUR_GITHUB_NAME/dsha-camera
+npm publish        # package.json 已声明 publishConfig.access = "public"
 ```
 
-别人拿到后：DSHA 里粘贴仓库链接，或 `dsh plugin --profile <profile> add <仓库地址>`，重启 Web 即生效。
+发布前可用 `npm pack --dry-run` 核对实际打包内容（当前 10 个文件、约 25 KB，不含任何构建产物）。
+
+别人拿到后：DSHA 里粘贴仓库地址或包名 `dsha-camera`，或 `dsh plugin --profile <profile> add dsha-camera`，重启 Web 即生效。
 
 ## License
 
@@ -206,9 +219,9 @@ Sending "what I'm looking at" to the agent currently costs six steps: open the c
 
 ### Install
 
-1. **DSHA plugin market** — open Plugins → add, paste `https://github.com/sakurocco/dsha-camera` or a Release zip, install, restart the Web UI.
-2. **CLI** — `dsh plugin --profile desktop add /path/to/dsha-camera` (or the npm name once published).
-3. **Manual** — copy this directory to `~/.dsh/profiles/<profile>/node_modules/dsha-camera` and insert the row shown in `cordis.patch.yml`.
+1. **DSHA plugin market** — open Plugins → add, paste `https://github.com/sakurocco/dsha-camera`, the npm name `dsha-camera`, or a Release zip; install, restart the Web UI.
+2. **npm** — `dsh plugin --profile <profile> add dsha-camera` (or `dsha-plugin install dsha-camera` inside DSHA).
+3. **Local directory / manual** — `dsh plugin --profile desktop add /path/to/dsha-camera`, or copy this directory to `~/.dsh/profiles/<profile>/node_modules/dsha-camera` and insert the row shown in `cordis.patch.yml`.
 
 ### Compatibility and limits
 
@@ -249,13 +262,15 @@ Editing needs no build: change `client.js`, reload the page. Tune `MAX_EDGE` and
 
 ### Publish
 
+Maintainer flow: commit, tag, push, then draft a GitHub Release from that tag with the generated zip attached.
+
 ```bash
-git init && git add . && git commit -m "feat: dsha-camera 1.0.0"
-git branch -M main
-git remote add origin https://github.com/sakurocco/dsha-camera.git
-git push -u origin main
-git tag v1.0.0 && git push origin v1.0.0   # then attach a zip to the Release
+git tag v1.0.5 && git push origin main --tags
+git archive --format=zip -o ../dsha-camera-1.0.5.zip HEAD   # Release asset
+npm login && npm publish                                    # npm registry
 ```
+
+`npm pack --dry-run` lists exactly what ships (10 files, ~25 KB, no build output).
 
 ### License
 

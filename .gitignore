@@ -20,3 +20,7 @@ pnpm-debug.log*
 # Local secrets, if anyone ever puts one here
 .env
 .env.*
+
+# npm scratch used for local pack/publish checks
+.npm-cache/
+*.tgz

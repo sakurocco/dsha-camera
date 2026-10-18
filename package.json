@@ -18,6 +18,7 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "dsh": {
@@ -47,13 +48,20 @@
     "web-ui",
     "bilingual"
   ],
+  "author": "sakurocco",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sakurocco/dsha-camera.git"
+  },
+  "homepage": "https://github.com/sakurocco/dsha-camera#readme",
+  "bugs": {
+    "url": "https://github.com/sakurocco/dsha-camera/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20"
-  },
-  "os": [
-    "darwin",
-    "linux",
-    "win32"
-  ]
+  }
 }
