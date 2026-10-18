@@ -1,7 +1,7 @@
 {
   "name": "dsha-camera",
-  "version": "1.0.13",
-  "description": "拍照直传：在 DeepSeek Harness 输入框的加号右侧加一个相机按钮，取景面板拍照后照片直接进入输入框草稿。Camera-to-draft photo capture for DeepSeek Harness.",
+  "version": "1.1.0",
+  "description": "拍照直传：在 DeepSeek Harness 输入框的加号右侧加一个相机按钮，点击直接调用系统相机，照片进入输入框草稿；长按可打开相册。Camera-to-draft photo capture for DeepSeek Harness.",
   "type": "module",
   "main": "index.js",
   "exports": {

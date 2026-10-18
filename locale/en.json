@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "DSHA Camera Upload",
-    "description": "Adds a camera button beside the composer's + control: an inline viewfinder that drops the photo straight into the draft without touching the device album."
+    "description": "Adds a camera button beside the composer's + control: tap it to open the system camera and drop the photo straight into the draft, or hold it to pick from the album."
   }
 }

@@ -1,34 +1,30 @@
 /**
  * dsha-camera — Client half (plain browser JavaScript, no build step).
  *
- * What it adds to the Harness Web page
- * ------------------------------------
- * 1. `conversation.input.left` — a camera button in the composer tool row,
- *    right after the shipped `+` control (the host renders that seat after the
- *    attachment and permission controls, which collapse on narrow layouts).
- * 2. `conversation.input.dock` — the expanding capture panel above the
- *    composer card. Opening it grows the composer region instead of taking
- *    over the whole screen: the viewfinder is a bounded band in the middle.
+ * What it adds
+ * ------------
+ * One camera button in the composer tool row, right of the shipped `+`
+ * control. Tapping it opens the system camera through
+ * `<input type="file" accept="image/*" capture="environment">`; the photo the
+ * camera returns goes straight into the draft — the same attachment path the
+ * Harness uses for a dropped or pasted image. Long-press opens the album
+ * picker instead.
  *
- * How a photo reaches the draft
- * -----------------------------
- * The browser half uses only public Client APIs:
- *   - `ctx.get('conversation').createDrafts(sessionId, files)` registers
- *     runtime-only draft attachments and returns their ids;
- *   - the `inputActions` standard prop's `addAttachments(ids)` appends those
- *     ids to the current draft, exactly like a dropped or pasted image.
- * Nothing is written to the album, the Downloads directory or a temporary
- * file: the frame lives in memory as a `File` until the user sends it.
+ * Why there is no in-page viewfinder
+ * ----------------------------------
+ * An earlier version drew a live `getUserMedia` preview inside a sheet. On the
+ * target device that stream collapses to about one frame per second a few
+ * seconds after it starts (measured: both video elements at 1 fps while the
+ * page still rendered at 120 fps), and reopening the camera only restored it
+ * for a few seconds. That is the camera HAL, not the page, so the preview was
+ * removed rather than shipped broken.
  *
- * Camera availability
- * -------------------
- * `getUserMedia` needs a secure context and a host that grants camera access.
- * The DSHA Android launcher (build 170 / 173) declares no CAMERA permission,
- * so its WebView rejects the request; the panel then offers the system camera
- * through `<input type="file" accept="image/*" capture="environment">`, which
- * returns a photo without the page ever touching the camera device. Desktop
- * browsers and any host that grants the permission get the inline viewfinder
- * automatically — no configuration and no second code path to maintain.
+ * Privacy note
+ * ------------
+ * The plugin itself never writes a file: the bytes live in memory until the
+ * user sends the message. Whether the camera app also keeps a copy in the
+ * device album is decided by that app; a page cannot prevent it. Only an
+ * in-page capture would avoid the camera app entirely.
  */
 
 window.__ModuleLoader__.load({
@@ -40,22 +36,10 @@ window.__ModuleLoader__.load({
     const h = React.createElement
     const { useCallback, useEffect, useMemo, useRef, useState } = React
 
-    /** Longest edge of an encoded frame, in source pixels. */
-    const MAX_EDGE = 1600
-    /** JPEG quality for the encoded frame. */
-    const JPEG_QUALITY = 0.86
     /** Image MIME types the composer accepts as image drafts. */
     const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
-    /** Remembered camera device for this browser origin. */
-    const DEVICE_KEY = 'dsha-camera:device'
-    /**
-     * Preview is fixed at one preset: resolution experiments did not change the
-     * accumulated lag, so the remaining suspects are on the presentation path
-     * (occlusion, rounded clipping, scroll containers), not the frame size.
-     */
-    const PREVIEW_PRESET = { width: 1280, height: 960, fps: 30 }
-    /** Resolution requested for one still, then reverted to the preview preset. */
-    const STILL_CONSTRAINTS = { width: { ideal: 1920 }, height: { ideal: 1440 } }
+    /** Long-press delay that switches the button to the album picker. */
+    const HOLD_MS = 600
 
     // ---------------------------------------------------------------------
     // Copy
@@ -63,70 +47,20 @@ window.__ModuleLoader__.load({
 
     const COPY = {
       zh: {
-        'trigger.open': '拍照上传',
-        'panel.title': '拍照上传',
-        'panel.hint': '只进输入框，不写入相册',
-        'panel.close': '关闭',
-        'shutter': '拍照',
-        'flip': '切换摄像头',
-        'album': '相册',
-        'system': '系统相机',
-        'stage.starting': '正在启动摄像头…',
-        'stage.blocked': '内嵌取景框不可用',
-        'stage.unsupported': '当前环境不提供摄像头数据流',
-        'stage.useFallback': '可以改用系统相机拍摄，或从相册选择。',
-        'stage.desktopShell': '桌面 App 窗口按策略只放行麦克风，摄像头请求会被拒绝。用 Chrome / Edge 打开同一个地址即可看到取景框。',
-        'stage.pickerHint': '若打开的是「安全访问 / 相册」，点左上角的相机图标可直接拍；注意系统相机会自己往相册存一份，插件无法阻止。',
-        'camera.label': '摄像头',
-        'camera.auto': '自动选择',
-        'fps.hint': '四个数字：大窗呈现 / 解码 / 界面 / 右上小窗呈现（每秒帧数）。小窗正常而大窗为 1＝该元素被判定不可见；两个都为 1＝相机源头只送 1 帧',
-        'flush': '刷新画面（只重建播放器，不重开相机）',
-        'stage.tapFlush': '轻点画面可重建播放器（不重开相机），用来清掉积压的帧',
-        'retry': '重试',
-        'copyAddress': '复制地址',
-        'copied': '已复制',
-        'reason.denied': '摄像头权限被拒绝',
-        'reason.notfound': '没有找到可用的摄像头',
-        'reason.busy': '摄像头被其他程序占用',
-        'reason.unknown': '无法打开摄像头',
+        'trigger.open': '拍照（长按选相册）',
+        'trigger.hint': '单击调用系统相机，长按打开相册',
         'error.bridge': '没找到会话的附件接口，请确认 Harness 版本不低于 0.2.0-rc.2',
         'error.locked': '输入框暂时不接受附件（状态：{phase}），等这次发送结束后再试。',
         'error.api': '当前 Harness 没有向插件暴露附件接口，照片没能放进输入框。',
-        'error.encode': '这一帧编码失败，请重试',
         'error.type': '只支持 JPEG / PNG / WebP / GIF 图片',
         'error.session': '当前没有可用的会话',
       },
       en: {
-        'trigger.open': 'Take a photo',
-        'panel.title': 'Take a photo',
-        'panel.hint': 'Goes into the draft only, never the album',
-        'panel.close': 'Close',
-        'shutter': 'Shoot',
-        'flip': 'Switch camera',
-        'album': 'Album',
-        'system': 'System camera',
-        'stage.starting': 'Starting the camera…',
-        'stage.blocked': 'Inline viewfinder unavailable',
-        'stage.unsupported': 'This environment exposes no camera stream',
-        'stage.useFallback': 'Use the system camera, or pick an image from the album.',
-        'stage.desktopShell': 'The desktop app window grants the microphone only, so camera requests are refused. Open the same address in Chrome or Edge to get the viewfinder.',
-        'stage.pickerHint': 'If the album opens instead, tap the camera tile in its top-left corner to shoot — and note the system camera app keeps its own copy in the album.',
-        'camera.label': 'Camera',
-        'camera.auto': 'Automatic',
-        'fps.hint': 'Four numbers: main presented / decoded / UI / mini preview, in frames per second. A healthy mini with a 1 fps main means this element is judged not visible; both at 1 means the camera source itself sends one frame per second',
-        'flush': 'Refresh the preview (rebuilds the player only, the camera stays open)',
-        'stage.tapFlush': 'Tap the preview to rebuild the player (the camera stays open) and drop queued frames',
-        'retry': 'Retry',
-        'copyAddress': 'Copy address',
-        'copied': 'Copied',
-        'reason.denied': 'Camera permission was denied',
-        'reason.notfound': 'No camera was found',
-        'reason.busy': 'Another app is using the camera',
-        'reason.unknown': 'The camera could not be opened',
+        'trigger.open': 'Take a photo (hold for album)',
+        'trigger.hint': 'Tap for the system camera, hold for the album',
         'error.bridge': 'The draft attachment API is missing; Harness 0.2.0-rc.2 or newer is required',
         'error.locked': 'The composer is not accepting attachments right now (phase: {phase}). Try again once the current send settles.',
         'error.api': 'This Harness build does not expose the attachment API to plugins, so the photo could not be placed in the draft.',
-        'error.encode': 'This frame could not be encoded, please try again',
         'error.type': 'Only JPEG / PNG / WebP / GIF images are supported',
         'error.session': 'No session is available',
       },
@@ -184,68 +118,6 @@ window.__ModuleLoader__.load({
     }
 
     // ---------------------------------------------------------------------
-    // Sheet state (one floating sheet for the whole frame)
-    // ---------------------------------------------------------------------
-
-    /**
-     * The capture surface lives in the frame-wide overlay layer, not inside
-     * the composer: a composer-sized seat clips the footer (and with it the
-     * shutter) on phones, which is exactly what happened in the dock version.
-     */
-    const SHEET = {
-      open: false,
-      sessionId: undefined,
-      inputActions: undefined,
-      /** Live composer phase, kept current while the sheet is open. */
-      phase: undefined,
-      /** Draft attachment count, used to confirm the paste fallback landed. */
-      attachments: 0,
-      listeners: new Set(),
-    }
-
-    function publishSheet() {
-      SHEET.listeners.forEach(function (listener) {
-        try {
-          listener()
-        } catch (error) {
-          // One broken listener must not keep the sheet from opening or closing.
-        }
-      })
-    }
-
-    function openSheet(sessionId, inputActions, phase, attachments) {
-      SHEET.open = true
-      SHEET.sessionId = sessionId
-      SHEET.inputActions = inputActions
-      SHEET.phase = phase
-      SHEET.attachments = attachments
-      publishSheet()
-    }
-
-    function closeSheet() {
-      if (!SHEET.open) return
-      SHEET.open = false
-      SHEET.inputActions = undefined
-      publishSheet()
-    }
-
-    function useSheet() {
-      const [, bump] = useState(0)
-      useEffect(function () {
-        const listener = function () {
-          bump(function (value) {
-            return value + 1
-          })
-        }
-        SHEET.listeners.add(listener)
-        return function () {
-          SHEET.listeners.delete(listener)
-        }
-      }, [])
-      return SHEET
-    }
-
-    // ---------------------------------------------------------------------
     // Draft hand-off
     // ---------------------------------------------------------------------
 
@@ -253,7 +125,6 @@ window.__ModuleLoader__.load({
       return ctx && typeof ctx.get === 'function' ? ctx.get('conversation') : undefined
     }
 
-    /** Drop staged drafts again when the composer refuses them. */
     function releaseDrafts(ctx, drafts) {
       const conversation = conversationOf(ctx)
       if (!conversation || typeof conversation.releaseDraftAttachments !== 'function') return
@@ -264,6 +135,12 @@ window.__ModuleLoader__.load({
       }
     }
 
+    function delay(ms) {
+      return new Promise(function (resolve) {
+        setTimeout(resolve, ms)
+      })
+    }
+
     function draftErrorCode(error) {
       const name = error && error.name ? String(error.name) : ''
       if (name === 'UnsupportedImageMediaTypeError') return 'error.type'
@@ -272,20 +149,12 @@ window.__ModuleLoader__.load({
       return 'error.bridge'
     }
 
-    function delay(ms) {
-      return new Promise(function (resolve) {
-        setTimeout(resolve, ms)
-      })
-    }
-
     /**
      * Hand one file to the composer's own paste intake. The Harness wires that
      * handler itself, so it keeps working even when a slot does not receive the
-     * `inputActions` prop (a mobile shell that re-declares the composer, for
-     * example). The dispatched event is a real ClipboardEvent carrying one
-     * file; the handler's `preventDefault()` is the acceptance signal.
+     * `inputActions` prop.
      */
-    async function pasteIntoComposer(file) {
+    function pasteIntoComposer(file) {
       try {
         if (typeof DataTransfer !== 'function') return false
         const editor =
@@ -308,16 +177,8 @@ window.__ModuleLoader__.load({
         if (!event.clipboardData) {
           Object.defineProperty(event, 'clipboardData', { value: transfer, configurable: true })
         }
-        const before = typeof SHEET.attachments === 'number' ? SHEET.attachments : 0
         editor.dispatchEvent(event)
-        if (event.defaultPrevented !== true) return false
-        // The handler consumes the event even when its own intake refuses, so
-        // confirmation is the draft's attachment count actually growing.
-        for (let attempt = 0; attempt < 10; attempt += 1) {
-          await delay(80)
-          if (typeof SHEET.attachments === 'number' && SHEET.attachments > before) return true
-        }
-        return false
+        return true
       } catch (error) {
         return false
       }
@@ -325,13 +186,6 @@ window.__ModuleLoader__.load({
 
     /**
      * Stage one browser `File` as a draft attachment of the active Session.
-     *
-     * The shell's `addAttachments` refuses while a submission is adjudicating or
-     * flying, so a refusal is retried briefly before giving up. If the action
-     * face is missing entirely, or every retry is refused, the file is handed to
-     * the composer's own paste intake instead: that path is wired by the Harness
-     * itself and stays independent of the props a slot happens to receive.
-     *
      * @returns 'ok' on success, otherwise a copy key describing the failure.
      */
     async function deliverToDraft(ctx, sessionId, inputActions, file) {
@@ -364,198 +218,12 @@ window.__ModuleLoader__.load({
       }
 
       releaseDrafts(ctx, drafts)
-      if (await pasteIntoComposer(file)) return 'ok'
+      if (pasteIntoComposer(file)) return 'ok'
       return canAppend ? 'error.locked' : 'error.api'
     }
 
     // ---------------------------------------------------------------------
-    // Capture helpers
-    // ---------------------------------------------------------------------
-
-    function stopStream(stream) {
-      if (!stream || typeof stream.getTracks !== 'function') return
-      try {
-        stream.getTracks().forEach(function (track) {
-          try {
-            track.stop()
-          } catch (error) {
-            // Already stopped.
-          }
-        })
-      } catch (error) {
-        // Nothing else to release.
-      }
-    }
-
-    /** Resolve on the next delivered frame, or after `ms` at the latest. */
-    function waitForFrame(video, ms) {
-      return new Promise(function (resolve) {
-        let settled = false
-        const finish = function () {
-          if (settled) return
-          settled = true
-          resolve()
-        }
-        const timer = setTimeout(finish, ms)
-        if (video && typeof video.requestVideoFrameCallback === 'function') {
-          video.requestVideoFrameCallback(function () {
-            clearTimeout(timer)
-            finish()
-          })
-        } else {
-          clearTimeout(timer)
-          finish()
-        }
-      })
-    }
-
-    /**
-     * Ask the camera for one high-resolution frame right before a still is
-     * drawn. The preview itself runs at the low-latency preset; bumping the
-     * track for a moment keeps the photo sharp without paying the queue cost
-     * all the time.
-     */
-    async function boostTrackForStill(track, video) {
-      if (!track || typeof track.applyConstraints !== 'function') return
-      try {
-        const settings = typeof track.getSettings === 'function' ? track.getSettings() : {}
-        if ((settings.width || 0) >= 1600) return
-        await track.applyConstraints(STILL_CONSTRAINTS)
-        await waitForFrame(video, 400)
-      } catch (error) {
-        // A camera that refuses the bump still yields the preview frame.
-      }
-    }
-
-    /** Put the track back on the preview preset after a capture attempt. */
-    function restorePreviewConstraints(track) {
-      if (!track || typeof track.applyConstraints !== 'function') return
-      try {
-        const pending = track.applyConstraints({
-          width: { ideal: PREVIEW_PRESET.width },
-          height: { ideal: PREVIEW_PRESET.height },
-          frameRate: { ideal: PREVIEW_PRESET.fps, max: PREVIEW_PRESET.fps + 6 },
-        })
-        if (pending && typeof pending.catch === 'function') pending.catch(function () {})
-      } catch (error) {
-        // Restoring is best effort; the sheet closes right after a capture.
-      }
-    }
-
-    function pad(value) {
-      return String(value).padStart(2, '0')
-    }
-
-    /** Last camera picked in this browser, '' when the host should choose. */
-    function readPreferredDevice() {
-      try {
-        return window.localStorage.getItem(DEVICE_KEY) || ''
-      } catch (error) {
-        return ''
-      }
-    }
-
-    function writePreferredDevice(deviceId) {
-      try {
-        if (deviceId) window.localStorage.setItem(DEVICE_KEY, deviceId)
-        else window.localStorage.removeItem(DEVICE_KEY)
-      } catch (error) {
-        // Private mode or a blocked storage partition: the choice stays in memory.
-      }
-    }
-
-
-    /**
-     * The Electron desktop shell installs a media permission handler that
-     * accepts microphone requests only, so video capture is refused no matter
-     * what the page asks for.
-     */
-    function isDesktopShell() {
-      try {
-        return typeof navigator !== 'undefined' && /Electron/i.test(navigator.userAgent)
-      } catch (error) {
-        return false
-      }
-    }
-
-    /** Android hosts route the capture input through their own file chooser. */
-    function isAndroidHost() {
-      try {
-        return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
-      } catch (error) {
-        return false
-      }
-    }
-
-    function timestampName() {      const now = new Date()
-      return (
-        'camera-' +
-        now.getFullYear() +
-        pad(now.getMonth() + 1) +
-        pad(now.getDate()) +
-        '-' +
-        pad(now.getHours()) +
-        pad(now.getMinutes()) +
-        pad(now.getSeconds()) +
-        '.jpg'
-      )
-    }
-
-    function reasonKey(error) {
-      const name = error && error.name ? String(error.name) : ''
-      if (name === 'NotAllowedError' || name === 'SecurityError' || name === 'PermissionDeniedError') {
-        return 'reason.denied'
-      }
-      if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError') {
-        return 'reason.notfound'
-      }
-      if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
-        return 'reason.busy'
-      }
-      return 'reason.unknown'
-    }
-
-    /**
-     * Encode the current video frame into a JPEG `File`.
-     * Only the frame in memory is touched; nothing is persisted.
-     */
-    async function encodeFrame(video, mirrored) {
-      const sourceWidth = video.videoWidth
-      const sourceHeight = video.videoHeight
-      if (!sourceWidth || !sourceHeight) throw new Error('frame-not-ready')
-
-      const scale = Math.min(1, MAX_EDGE / Math.max(sourceWidth, sourceHeight))
-      const width = Math.max(1, Math.round(sourceWidth * scale))
-      const height = Math.max(1, Math.round(sourceHeight * scale))
-
-      const canvas = document.createElement('canvas')
-      canvas.width = width
-      canvas.height = height
-      const context = canvas.getContext('2d')
-      if (!context) throw new Error('canvas-unavailable')
-
-      if (mirrored) {
-        context.translate(width, 0)
-        context.scale(-1, 1)
-      }
-      context.drawImage(video, 0, 0, width, height)
-
-      const blob = await new Promise(function (resolve, reject) {
-        canvas.toBlob(
-          function (value) {
-            if (value) resolve(value)
-            else reject(new Error('encode-failed'))
-          },
-          'image/jpeg',
-          JPEG_QUALITY,
-        )
-      })
-
-      return new File([blob], timestampName(), { type: 'image/jpeg', lastModified: Date.now() })
-    }
-
-    // ---------------------------------------------------------------------
-    // Icons (16px stroke set, matching the composer's control weight)
+    // Icon (16px stroke set, matching the composer's control weight)
     // ---------------------------------------------------------------------
 
     function svgProps(size) {
@@ -585,97 +253,14 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function IconClose(props) {
-      const size = props && props.size ? props.size : 16
-      return h(
-        'svg',
-        svgProps(size),
-        h('path', {
-          d: 'M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6',
-          stroke: 'currentColor',
-          strokeWidth: 1.4,
-          strokeLinecap: 'round',
-        }),
-      )
-    }
-
-    function IconAlbum(props) {
-      const size = props && props.size ? props.size : 16
-      return h(
-        'svg',
-        svgProps(size),
-        h('rect', {
-          x: 2.1,
-          y: 3.1,
-          width: 11.8,
-          height: 9.8,
-          rx: 1.8,
-          stroke: 'currentColor',
-          strokeWidth: 1.25,
-        }),
-        h('circle', { cx: 5.9, cy: 6.4, r: 1.05, fill: 'currentColor' }),
-        h('path', {
-          d: 'M3.1 11.3l3.2-3.1 2.3 2.2 2.1-1.9 2.2 2.1',
-          stroke: 'currentColor',
-          strokeWidth: 1.25,
-          strokeLinecap: 'round',
-          strokeLinejoin: 'round',
-        }),
-      )
-    }
-
-    function IconSwitch(props) {
-      const size = props && props.size ? props.size : 16
-      return h(
-        'svg',
-        svgProps(size),
-        h('path', {
-          d: 'M13.1 6.4A5.2 5.2 0 0 0 4 3.7M2.9 9.6A5.2 5.2 0 0 0 12 12.3',
-          stroke: 'currentColor',
-          strokeWidth: 1.25,
-          strokeLinecap: 'round',
-        }),
-        h('path', {
-          d: 'M13.3 3.2v3.3H10M2.7 12.8V9.5H6',
-          stroke: 'currentColor',
-          strokeWidth: 1.25,
-          strokeLinecap: 'round',
-          strokeLinejoin: 'round',
-        }),
-      )
-    }
-
-    function IconRefresh(props) {
-      const size = props && props.size ? props.size : 16
-      return h(
-        'svg',
-        svgProps(size),
-        h('path', {
-          d: 'M13.1 8.4a5.1 5.1 0 1 1-1.5-4.1',
-          stroke: 'currentColor',
-          strokeWidth: 1.3,
-          strokeLinecap: 'round',
-        }),
-        h('path', {
-          d: 'M13.4 3.2v3.6H9.8',
-          stroke: 'currentColor',
-          strokeWidth: 1.3,
-          strokeLinecap: 'round',
-          strokeLinejoin: 'round',
-        }),
-      )
-    }
-
     // ---------------------------------------------------------------------
-    // Capture panel
+    // Trigger
     // ---------------------------------------------------------------------
 
-    function CameraPanel(props) {
+    function CameraTrigger(props) {
       const ctx = props.ctx
       const sessionId = props.sessionId
       const inputActions = props.inputActions
-      const onClose = props.onClose
-
       const tag = useLocaleTag(ctx)
       const t = useMemo(
         function () {
@@ -684,314 +269,18 @@ window.__ModuleLoader__.load({
         [tag],
       )
 
-      const [phase, setPhase] = useState('starting')
-      const [facing, setFacing] = useState('environment')
-      const [detail, setDetail] = useState('')
+      const captureRef = useRef(null)
+      const albumRef = useRef(null)
+      const holdRef = useRef(0)
       const [busy, setBusy] = useState(false)
-      const [devices, setDevices] = useState([])
-      const [deviceId, setDeviceId] = useState(readPreferredDevice)
-      const [attempt, setAttempt] = useState(0)
-      const [copied, setCopied] = useState(false)
 
-      const videoRef = useRef(null)
-      const miniRef = useRef(null)
-      const streamRef = useRef(null)
-      const systemInputRef = useRef(null)
-      const albumInputRef = useRef(null)
-
-      // Start and stop the preview stream with the panel's lifetime.
-      useEffect(
-        function () {
-          let cancelled = false
-          const media = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined
-          if (!media || typeof media.getUserMedia !== 'function') {
-            setPhase('unsupported')
-            return function () {
-              cancelled = true
-            }
-          }
-
-          setPhase('starting')
-          setDetail('')
-
-          // 预览固定一档。分辨率实验已证明不是根因，剩下的怀疑都在呈现路径上。
-          const previewConstraints = {
-            width: { ideal: PREVIEW_PRESET.width },
-            height: { ideal: PREVIEW_PRESET.height },
-            frameRate: { ideal: PREVIEW_PRESET.fps, max: PREVIEW_PRESET.fps + 6 },
-          }
-          const videoConstraints = deviceId
-            ? { deviceId: { exact: deviceId }, ...previewConstraints }
-            : { facingMode: { ideal: facing }, ...previewConstraints }
-
-          media
-            .getUserMedia({ audio: false, video: videoConstraints })
-            .then(function (stream) {
-              if (cancelled) {
-                stopStream(stream)
-                return
-              }
-              streamRef.current = stream
-              const video = videoRef.current
-              if (video) {
-                video.srcObject = stream
-                const played = video.play()
-                if (played && typeof played.catch === 'function') {
-                  played.catch(function () {
-                    // Autoplay refusal leaves a still frame; capture still works.
-                  })
-                }
-              }
-              const mini = miniRef.current
-              if (mini) {
-                mini.srcObject = stream
-                const miniPlayed = mini.play()
-                if (miniPlayed && typeof miniPlayed.catch === 'function') {
-                  miniPlayed.catch(function () {})
-                }
-              }
-              setPhase('live')
-              if (typeof media.enumerateDevices === 'function') {
-                media
-                  .enumerateDevices()
-                  .then(function (list) {
-                    if (cancelled) return
-                    const cameras = []
-                    list.forEach(function (device) {
-                      if (device.kind !== 'videoinput') return
-                      cameras.push({
-                        id: device.deviceId,
-                        label: device.label || 'Camera ' + (cameras.length + 1),
-                      })
-                    })
-                    setDevices(cameras)
-                  })
-                  .catch(function () {
-                    // Hosts that hide the device list simply get no picker.
-                  })
-              }
-            })
-            .catch(function (error) {
-              if (cancelled) return
-              if (deviceId && error && error.name === 'OverconstrainedError') {
-                // The remembered camera is gone: fall back to the default one.
-                writePreferredDevice('')
-                setDeviceId('')
-                return
-              }
-              setDetail(reasonKey(error))
-              setPhase('blocked')
-            })
-
-          return function () {
-            cancelled = true
-            stopStream(streamRef.current)
-            streamRef.current = null
-          }
-        },
-        [attempt, deviceId, facing, sessionId],
-      )
-
-      // 三项读数：呈现 / 解码 / 界面，另加一个小窗的呈现帧率（第 4 个数）。
-      // 小窗 30 而大窗 1 → 元素可见性被判错；两个都 1 → 相机源头只送 1 帧。
-      const [meter, setMeter] = useState({ v: 0, q: -1, u: 0, m: 0 })
-      const [flushing, setFlushing] = useState(0)
-
-      /**
-       * 重建播放器但不重开相机：把 srcObject 摘掉再挂回去，Chromium 会丢掉已经
-       * 积压在播放器里的帧。轻点取景区即可触发，用来区分"播放器积压"和"相机侧丢帧"。
-       */
-      const flushPreview = useCallback(function () {
-        const video = videoRef.current
-        const stream = streamRef.current
-        if (!video || !stream) return
-        try {
-          video.srcObject = null
-          requestAnimationFrame(function () {
-            requestAnimationFrame(function () {
-              const target = videoRef.current
-              if (!target) return
-              target.srcObject = stream
-              const played = target.play()
-              if (played && typeof played.catch === 'function') played.catch(function () {})
-            })
-          })
-          setFlushing(function (value) {
-            return value + 1
-          })
-        } catch (error) {
-          // 冲刷失败就保持现状，下一轮再试。
-        }
-      }, [])
-
-      // 看门狗：实测相机源几秒后会被降到约 1fps（读数 1/1/120·1），而重开相机
-      // 能恢复。帧率连续两秒低于 8 就自动重开一次，带 6 秒冷却与次数上限。
-      const lastRestartRef = useRef(0)
-      const restartCountRef = useRef(0)
-      const restartStream = useCallback(function () {
-        const now = performance.now()
-        if (now - lastRestartRef.current < 6000) return
-        if (restartCountRef.current >= 20) return
-        lastRestartRef.current = now
-        restartCountRef.current += 1
-        setAttempt(function (value) {
-          return value + 1
-        })
-      }, [])
-
-      // 每秒统计一次：呈现（rVFC）、解码（getVideoPlaybackQuality）、界面（rAF）。
-      useEffect(
-        function () {
-          if (phase !== 'live') return undefined
-          const video = videoRef.current
-          if (!video || typeof video.requestVideoFrameCallback !== 'function') return undefined
-          let slowSeconds = 0
-          let presented = 0
-          let mini = 0
-          let ui = 0
-          let handle = 0
-          let miniHandle = 0
-          let rafHandle = 0
-          let lastTotal = -1
-          let last = performance.now()
-          const tick = function () {
-            presented += 1
-            handle = video.requestVideoFrameCallback(tick)
-          }
-          const miniTick = function () {
-            mini += 1
-            const element = miniRef.current
-            if (element && typeof element.requestVideoFrameCallback === 'function') {
-              miniHandle = element.requestVideoFrameCallback(miniTick)
-            }
-          }
-          const uiTick = function () {
-            ui += 1
-            rafHandle = requestAnimationFrame(uiTick)
-          }
-          handle = video.requestVideoFrameCallback(tick)
-          const miniElement = miniRef.current
-          if (miniElement && typeof miniElement.requestVideoFrameCallback === 'function') {
-            miniHandle = miniElement.requestVideoFrameCallback(miniTick)
-          }
-          rafHandle = requestAnimationFrame(uiTick)
-          const timer = setInterval(function () {
-            const now = performance.now()
-            const seconds = Math.max(0.001, (now - last) / 1000)
-            const presentedRate = presented / seconds
-            const miniRate = mini / seconds
-            const uiRate = ui / seconds
-            let decodedRate = -1
-            if (typeof video.getVideoPlaybackQuality === 'function') {
-              const quality = video.getVideoPlaybackQuality()
-              const total = quality && typeof quality.totalVideoFrames === 'number'
-                ? quality.totalVideoFrames
-                : -1
-              if (total >= 0 && lastTotal >= 0 && total >= lastTotal) {
-                decodedRate = (total - lastTotal) / seconds
-              }
-              lastTotal = total
-            }
-            presented = 0
-            mini = 0
-            ui = 0
-            last = now
-            if (presentedRate < 8) slowSeconds += 1
-            else slowSeconds = 0
-            if (slowSeconds >= 2) {
-              slowSeconds = 0
-              restartStream()
-            }
-            setMeter({
-              v: Math.round(presentedRate),
-              q: decodedRate < 0 ? -1 : Math.round(decodedRate),
-              u: Math.round(uiRate),
-              m: Math.round(miniRate),
-            })
-            try {
-              console.log(
-                '[dsha-camera] presented=' +
-                  presentedRate.toFixed(1) +
-                  ' decoded=' +
-                  (decodedRate < 0 ? 'n/a' : decodedRate.toFixed(1)) +
-                  ' ui=' +
-                  uiRate.toFixed(1) +
-                  ' size=' +
-                  video.videoWidth +
-                  'x' +
-                  video.videoHeight,
-              )
-            } catch (error) {
-              // Logging must never disturb the preview.
-            }
-          }, 1000)
-          return function () {
-            clearInterval(timer)
-            if (handle && typeof video.cancelVideoFrameCallback === 'function') {
-              video.cancelVideoFrameCallback(handle)
-            }
-            if (rafHandle) cancelAnimationFrame(rafHandle)
-          }
-        },
-        [phase, restartStream],
-      )
-
-      // Escape closes the panel before anything else consumes it.
-      useEffect(
-        function () {
-          const onKeyDown = function (event) {
-            if (event.key !== 'Escape') return
-            event.stopPropagation()
-            onClose()
-          }
-          window.addEventListener('keydown', onKeyDown, true)
-          return function () {
-            window.removeEventListener('keydown', onKeyDown, true)
-          }
-        },
-        [onClose],
-      )
-
-      // Hold the page behind the sheet still while it is open.
       useEffect(function () {
-        const body = document.body
-        if (!body) return undefined
-        const previous = body.style.overflow
-        body.style.overflow = 'hidden'
         return function () {
-          body.style.overflow = previous
+          if (holdRef.current) window.clearTimeout(holdRef.current)
         }
       }, [])
 
-      // Note: the panel deliberately survives the page being hidden. Opening the
-      // system camera or the album backgrounds the page, and unmounting here
-      // would discard the photo that is about to come back through the picker.
-      // The stream is released by the preview effect on unmount, on close and
-      // when the facing mode changes.
-
-      const shoot = useCallback(async function () {
-        const video = videoRef.current
-        if (!video || busy || phase !== 'live') return
-        setBusy(true)
-        setDetail('')
-        let code = 'ok'
-        const track = streamRef.current ? streamRef.current.getVideoTracks()[0] : undefined
-        try {
-          // 取静帧前临时把轨道提到高分辨率；预览流一直是低负载的。
-          await boostTrackForStill(track, video)
-          const file = await encodeFrame(video, facing === 'user')
-          code = await deliverToDraft(ctx, sessionId, inputActions, file)
-        } catch (error) {
-          code = 'error.encode'
-        } finally {
-          setBusy(false)
-          restorePreviewConstraints(track)
-        }
-        if (code === 'ok') onClose()
-        else setDetail(code)
-      }, [busy, ctx, facing, inputActions, onClose, phase, sessionId])
-
-      const pickFiles = useCallback(
+      const onPicked = useCallback(
         async function (event) {
           const input = event.currentTarget
           const files = Array.prototype.slice.call(input.files || [])
@@ -999,448 +288,121 @@ window.__ModuleLoader__.load({
           const file = files.find(function (candidate) {
             return candidate && IMAGE_TYPES.indexOf(candidate.type) !== -1
           })
-          if (!file) {
-            setDetail('error.type')
-            return
+          if (!file) return
+          setBusy(true)
+          try {
+            await deliverToDraft(ctx, sessionId, inputActions, file)
+          } finally {
+            setBusy(false)
           }
-          const code = await deliverToDraft(ctx, sessionId, inputActions, file)
-          if (code === 'ok') onClose()
-          else setDetail(code)
         },
-        [ctx, inputActions, onClose, sessionId],
+        [ctx, inputActions, sessionId],
       )
 
-      const openSystemCamera = useCallback(function () {
-        if (systemInputRef.current) systemInputRef.current.click()
+      const openCapture = useCallback(function () {
+        if (captureRef.current) captureRef.current.click()
       }, [])
 
       const openAlbum = useCallback(function () {
-        if (albumInputRef.current) albumInputRef.current.click()
+        if (albumRef.current) albumRef.current.click()
       }, [])
 
-      const onDeviceChange = useCallback(function (event) {
-        const next = event.target.value
-        setDetail('')
-        writePreferredDevice(next)
-        setDeviceId(next)
-      }, [])
+      const onPointerDown = useCallback(
+        function () {
+          if (busy) return
+          if (holdRef.current) window.clearTimeout(holdRef.current)
+          holdRef.current = window.setTimeout(function () {
+            holdRef.current = 0
+            openAlbum()
+          }, HOLD_MS)
+        },
+        [busy, openAlbum],
+      )
 
-      const retry = useCallback(function () {
-        setDetail('')
-        setAttempt(function (value) {
-          return value + 1
-        })
-      }, [])
-
-      const copyAddress = useCallback(function () {
-        const address = typeof window !== 'undefined' ? window.location.href : ''
-        try {
-          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-            navigator.clipboard.writeText(address).then(
-              function () {
-                setCopied(true)
-              },
-              function () {
-                // Clipboard denied: the address stays selectable in the hint.
-              },
-            )
+      const onPointerUp = useCallback(
+        function () {
+          if (holdRef.current) {
+            window.clearTimeout(holdRef.current)
+            holdRef.current = 0
+            openCapture()
           }
-        } catch (error) {
-          // Same fallback as above.
+        },
+        [openCapture],
+      )
+
+      const cancelHold = useCallback(function () {
+        if (holdRef.current) {
+          window.clearTimeout(holdRef.current)
+          holdRef.current = 0
         }
       }, [])
 
-      const live = phase === 'live'
-      const failureKey = detail || 'stage.blocked'
-      const showFailure = phase !== 'live' && phase !== 'starting'
-      const errorKey = detail.indexOf('error.') === 0 ? detail : ''
-      // `error.locked` names the composer phase it saw, so a stuck shell is
-      // reported as a phase instead of a vague "please retry".
-      const failureVars =
-        failureKey === 'error.locked' || errorKey === 'error.locked'
-          ? { phase: SHEET.phase || 'unknown' }
-          : undefined
+      const onKeyDown = useCallback(
+        function (event) {
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          event.preventDefault()
+          openCapture()
+        },
+        [openCapture],
+      )
 
       return h(
-        'section',
-        {
-          className: 'dsha-cam-sheet',
-          role: 'dialog',
-          'aria-modal': 'true',
-          'aria-label': t('panel.title'),
-          'data-phase': phase,
-        },
-        h('span', { className: 'dsha-cam-keepalive', 'aria-hidden': true }),
-        h('div', {
-          className: 'dsha-cam-grabber',
-          role: 'button',
-          tabIndex: -1,
-          'aria-label': t('panel.close'),
-          onClick: onClose,
-        }),
+        'span',
+        { className: 'dsha-cam-root' },
         h(
-          'div',
-          { className: 'dsha-cam-head' },
-          h('span', { className: 'dsha-cam-mark' }, h(IconCamera, { size: 16 })),
-          h(
-            'div',
-            { className: 'dsha-cam-headText' },
-            h('span', { className: 'dsha-cam-title' }, t('panel.title')),
-            h('span', { className: 'dsha-cam-hint' }, t('panel.hint')),
-          ),
-          meter.v > 0
-            ? h(
-                'span',
-                {
-                  className: 'dsha-cam-lag' + (meter.v < 12 ? ' is-slow' : ''),
-                  title: t('fps.hint'),
-                },
-                meter.v + ' / ' + (meter.q >= 0 ? meter.q : '–') + ' / ' + meter.u + ' · ' + meter.m,
-              )
-            : null,
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'dsha-cam-closeBtn',
-              'aria-label': t('panel.close'),
-              title: t('panel.close'),
-              onClick: onClose,
-            },
-            h(IconClose, { size: 18 }),
-          ),
-        ),
-        h(
-          'div',
-          { className: 'dsha-cam-devices' },
-          devices.length > 1
-            ? h(
-                'select',
-                {
-                  className: 'dsha-cam-select',
-                  'aria-label': t('camera.label'),
-                  value: deviceId,
-                  onChange: onDeviceChange,
-                },
-                h('option', { value: '' }, t('camera.auto')),
-                devices.map(function (device) {
-                  return h('option', { key: device.id, value: device.id }, device.label)
-                }),
-              )
-            : h('span', { className: 'dsha-cam-devicesLabel' }, t('camera.label')),
-        ),
-        h(
-          'div',
+          'button',
           {
-            className: 'dsha-cam-stage',
-            'data-phase': phase,
-            title: phase === 'live' ? t('stage.tapFlush') : undefined,
-            onClick: phase === 'live' ? flushPreview : undefined,
-          },
-          h('video', {
-            ref: videoRef,
-            className: 'dsha-cam-video' + (facing === 'user' ? ' is-mirrored' : ''),
-            autoPlay: true,
-            playsInline: true,
-            muted: true,
-            disablePictureInPicture: true,
-            disableRemotePlayback: true,
-          }),
-          h('video', {
-            ref: miniRef,
-            className: 'dsha-cam-mini',
-            autoPlay: true,
-            playsInline: true,
-            muted: true,
-          }),
-          phase === 'live'
-            ? null
-            : h(
-                'div',
-                { className: 'dsha-cam-stageNote' },
-                h(
-                  'p',
-                  { className: 'dsha-cam-stageText' },
-                  phase === 'starting'
-                    ? t('stage.starting')
-                    : phase === 'unsupported'
-                      ? t('stage.unsupported')
-                      : t(failureKey, failureVars),
-                ),
-                showFailure
-                  ? h('p', { className: 'dsha-cam-stageText is-dim' }, t('stage.useFallback'))
-                  : null,
-                showFailure && isDesktopShell()
-                  ? h('p', { className: 'dsha-cam-stageText is-dim' }, t('stage.desktopShell'))
-                  : null,
-                showFailure && isAndroidHost() && !isDesktopShell()
-                  ? h('p', { className: 'dsha-cam-stageText is-dim' }, t('stage.pickerHint'))
-                  : null,
-                showFailure
-                  ? h(
-                      'div',
-                      { className: 'dsha-cam-stageActions' },
-                      h(
-                        'button',
-                        { type: 'button', className: 'dsha-cam-pill', onClick: retry },
-                        h(IconSwitch, { size: 14 }),
-                        h('span', null, t('retry')),
-                      ),
-                      isDesktopShell()
-                        ? null
-                        : h(
-                            'button',
-                            { type: 'button', className: 'dsha-cam-pill', onClick: openSystemCamera },
-                            h(IconCamera, { size: 14 }),
-                            h('span', null, t('system')),
-                          ),
-                      h(
-                        'button',
-                        { type: 'button', className: 'dsha-cam-pill', onClick: openAlbum },
-                        h(IconAlbum, { size: 14 }),
-                        h('span', null, t('album')),
-                      ),
-                      isDesktopShell()
-                        ? h(
-                            'button',
-                            { type: 'button', className: 'dsha-cam-pill', onClick: copyAddress },
-                            h('span', null, copied ? t('copied') : t('copyAddress')),
-                          )
-                        : null,
-                    )
-                  : null,
-              ),
-        ),
-        h(
-          'div',
-          { className: 'dsha-cam-foot' },
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'dsha-cam-iconBtn is-wide',
-              'aria-label': t('album'),
-              title: t('album'),
-              onClick: openAlbum,
-            },
-            h(IconAlbum, { size: 20 }),
-          ),
-          h('button', {
             type: 'button',
-            className: 'dsha-cam-shutter',
-            'aria-label': t('shutter'),
-            title: t('shutter'),
-            disabled: !live || busy,
-            onClick: shoot,
-          }),
-          devices.length > 1
-            ? h('span', { className: 'dsha-cam-spacer', 'aria-hidden': true })
-            : h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'dsha-cam-iconBtn is-wide',
-                  'aria-label': t('flip'),
-                  title: t('flip'),
-                  disabled: !live,
-                  onClick: function () {
-                    setFacing(function (current) {
-                      return current === 'environment' ? 'user' : 'environment'
-                    })
-                  },
-                },
-                h(IconSwitch, { size: 19 }),
-              ),
+            className: 'dsha-cam-trigger' + (busy ? ' is-busy' : ''),
+            'aria-label': t('trigger.open'),
+            title: t('trigger.hint'),
+            disabled: busy,
+            onPointerDown: onPointerDown,
+            onPointerUp: onPointerUp,
+            onPointerLeave: cancelHold,
+            onPointerCancel: cancelHold,
+            onKeyDown: onKeyDown,
+            onClick: function (event) {
+              // The pointer handlers already opened a picker; keep the click
+              // from firing a second one on browsers that emit both.
+              event.preventDefault()
+            },
+          },
+          h(IconCamera, { size: 16 }),
         ),
-        errorKey
-          ? h(
-              'p',
-              { className: 'dsha-cam-error', role: 'alert' },
-              t(errorKey, failureVars),
-            )
-          : null,
         h('input', {
-          ref: systemInputRef,
+          ref: captureRef,
           className: 'dsha-cam-file',
           type: 'file',
           accept: 'image/*',
           capture: 'environment',
           tabIndex: -1,
           'aria-hidden': true,
-          onChange: pickFiles,
+          onChange: onPicked,
         }),
         h('input', {
-          ref: albumInputRef,
+          ref: albumRef,
           className: 'dsha-cam-file',
           type: 'file',
           accept: 'image/*',
           tabIndex: -1,
           'aria-hidden': true,
-          onChange: pickFiles,
+          onChange: onPicked,
         }),
       )
     }
 
     // ---------------------------------------------------------------------
-    // Slot entries
-    // ---------------------------------------------------------------------
-
-    function CameraTrigger(props) {
-      const ctx = props.ctx
-      const sessionId = props.sessionId
-      const tag = useLocaleTag(ctx)
-      const t = useMemo(
-        function () {
-          return makeT(tag)
-        },
-        [tag],
-      )
-      const sheet = useSheet()
-
-      // Live composer phase: the shell refuses attachments while it adjudicates
-      // or submits, and that refusal is otherwise indistinguishable from a
-      // missing action face.
-      const useInput = props.useInput
-      const phase =
-        typeof useInput === 'function'
-          ? useInput(function (state) {
-              return state && state.phase
-            })
-          : undefined
-      const attachments =
-        typeof useInput === 'function'
-          ? useInput(function (state) {
-              return state && state.attachmentIds ? state.attachmentIds.length : 0
-            })
-          : 0
-
-      // Switching Session closes a sheet that belongs to the previous one.
-      useEffect(
-        function () {
-          if (SHEET.open && SHEET.sessionId !== sessionId) closeSheet()
-        },
-        [sessionId],
-      )
-
-      // Keep the sheet's copy of the inputs as fresh as the composer itself.
-      useEffect(
-        function () {
-          if (!SHEET.open || SHEET.sessionId !== sessionId) return
-          SHEET.phase = phase
-          SHEET.attachments = typeof attachments === 'number' ? attachments : 0
-        },
-        [attachments, phase, sessionId],
-      )
-
-      useEffect(
-        function () {
-          if (!SHEET.open || SHEET.sessionId !== sessionId) return
-          if (props.inputActions) SHEET.inputActions = props.inputActions
-        },
-        [props.inputActions, sessionId],
-      )
-
-      const open = sheet.open && sheet.sessionId === sessionId
-      const toggle = useCallback(
-        function () {
-          if (SHEET.open && SHEET.sessionId === sessionId) closeSheet()
-          else openSheet(sessionId, props.inputActions, phase, attachments)
-        },
-        [attachments, phase, props.inputActions, sessionId],
-      )
-
-      return h(
-        'button',
-        {
-          type: 'button',
-          className: 'dsha-cam-trigger',
-          'aria-label': t('trigger.open'),
-          'aria-pressed': open ? 'true' : 'false',
-          'aria-expanded': open ? 'true' : 'false',
-          title: t('trigger.open'),
-          onClick: toggle,
-        },
-        h(IconCamera, { size: 16 }),
-      )
-    }
-
-    /**
-     * Frame-wide overlay entry: scrim plus the bottom sheet. It carries no
-     * Session props of its own, so the trigger hands the active Session and
-     * its `inputActions` over when it opens the sheet.
-     */
-    function CameraOverlay(props) {
-      const sheet = useSheet()
-      if (!sheet.open || sheet.sessionId === undefined) return null
-      return h(
-        'div',
-        { className: 'dsha-cam-layer' },
-        h('div', {
-          className: 'dsha-cam-scrim',
-          'aria-hidden': true,
-          onClick: closeSheet,
-        }),
-        h(CameraPanel, {
-          ctx: props.ctx,
-          sessionId: sheet.sessionId,
-          inputActions: sheet.inputActions,
-          onClose: closeSheet,
-        }),
-      )
-    }
-
-    // ---------------------------------------------------------------------
-    // Styles (theme tokens only; the viewfinder backdrop is artwork)
+    // Styles (theme tokens only)
     // ---------------------------------------------------------------------
 
     const CSS = [
-      '.dsha-cam-trigger{width:28px;height:28px;flex:none;display:grid;place-items:center;padding:0;border:none;border-radius:999px;cursor:pointer;color:var(--dsw-alias-label-primary);background:var(--dsw-specific-selector,var(--dsw-alias-bg-layer-2));corner-shape:round;transition:background-color .1s}',
-      '.dsha-cam-trigger:hover{background:var(--dsw-alias-interactive-bg-hover-solid,var(--dsw-alias-bg-layer-2))}',
-      '.dsha-cam-trigger[aria-pressed="true"]{color:var(--dsw-alias-brand-primary)}',
-      '.dsha-cam-trigger:focus-visible,.dsha-cam-iconBtn:focus-visible,.dsha-cam-pill:focus-visible,.dsha-cam-shutter:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}',
-      '.dsha-cam-layer{position:fixed;left:0;right:0;top:0;height:100vh;height:100dvh;z-index:1000;display:flex;align-items:flex-end;justify-content:center;pointer-events:auto;background:#0b0c0f}',
-      '.dsha-cam-scrim{position:absolute;inset:0;background:transparent}',
-      '.dsha-cam-sheet{position:relative;z-index:1;box-sizing:border-box;width:100%;max-width:640px;max-height:100%;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,#e5e6eb);border-bottom:none;border-radius:18px 18px 0 0;box-shadow:0 -10px 36px rgba(0,0,0,.32);overflow:hidden}',
-      '.dsha-cam-grabber{position:relative;display:block;width:100%;height:22px;flex:none;margin:0;background:transparent;cursor:pointer}',
-      '.dsha-cam-grabber::after{content:"";position:absolute;left:50%;top:9px;transform:translateX(-50%);width:44px;height:5px;border-radius:999px;background:var(--dsw-alias-border-l2,#d9dbe0)}',
-      '.dsha-cam-head{display:flex;align-items:center;gap:10px;flex:none;min-height:44px;padding:2px 14px 6px}',
-      '.dsha-cam-closeBtn{width:40px;height:40px;flex:none;margin-left:auto;display:grid;place-items:center;padding:0;border:1px solid var(--dsw-alias-border-l1,#e5e6eb);border-radius:999px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-primary,#111);cursor:pointer}',
-      '.dsha-cam-lag{flex:none;margin-left:auto;padding:2px 8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-secondary,#6b7280);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}',
-      '.dsha-cam-lag.is-slow{background:rgba(255,149,0,.18);color:#b25f00;font-weight:600}',
-      '.dsha-cam-closeBtn:hover{background:var(--dsw-alias-border-l1)}',
-      '.dsha-cam-mark{display:grid;place-items:center;width:24px;height:24px;flex:none;border-radius:8px;color:var(--dsw-alias-brand-primary,#1a73e8);background:var(--dsw-alias-bg-layer-2,#f2f3f5)}',
-      '.dsha-cam-headText{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}',
-      '.dsha-cam-title{font-size:14px;font-weight:600;line-height:19px;color:var(--dsw-alias-label-primary,#111)}',
-      '.dsha-cam-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary,#6b7280);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-      '.dsha-cam-devices{display:flex;align-items:center;gap:8px;flex:none;padding:0 12px 8px}',      '.dsha-cam-devicesLabel{flex:none;font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary)}',
-      '.dsha-cam-select{flex:1 1 auto;min-width:0;height:28px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1,#e5e6eb);border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-primary,#111);font-size:12px;cursor:pointer}',
-      '.dsha-cam-spacer{width:44px;height:44px;flex:none}',
-      '.dsha-cam-iconBtn{width:28px;height:28px;flex:none;display:grid;place-items:center;padding:0;border:none;border-radius:999px;background:none;color:var(--dsw-alias-label-secondary,#6b7280);cursor:pointer;margin-left:auto}',
-      '.dsha-cam-iconBtn.is-wide{width:44px;height:44px;margin-left:0}',
-      '.dsha-cam-iconBtn.is-flush{background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-primary,#111);border:1px solid var(--dsw-alias-border-l1,#e5e6eb)}',
-      '.dsha-cam-iconBtn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
-      '.dsha-cam-iconBtn:disabled{opacity:.4;cursor:default}',
-      '.dsha-cam-stage{position:relative;flex:0 1 auto;margin:2px 10px 0;height:min(46vh,420px);min-height:120px;background:#0a0c10}',
-      '.dsha-cam-video{width:100%;height:100%;display:block;object-fit:cover;background:#0a0c10}',
-      '.dsha-cam-video.is-mirrored{transform:scaleX(-1)}',
-      '.dsha-cam-mini{position:absolute;right:6px;top:6px;width:64px;height:48px;object-fit:cover;border:1px solid rgba(255,255,255,.55);border-radius:6px;background:#000;z-index:2;pointer-events:none}',
-      '.dsha-cam-stage[data-phase="starting"] .dsha-cam-video,.dsha-cam-stage[data-phase="blocked"] .dsha-cam-video,.dsha-cam-stage[data-phase="unsupported"] .dsha-cam-video{visibility:hidden}',
-      '.dsha-cam-stageNote{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px;text-align:center}',
-      '.dsha-cam-stageText{margin:0;max-width:34ch;font-size:12.5px;line-height:19px;color:#ccd2dc}',
-      '.dsha-cam-stageText.is-dim{color:#8f97a4}',
-      '.dsha-cam-stageActions{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:4px}',
-      '.dsha-cam-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(255,255,255,.08);color:#eef1f6;font-size:12px;line-height:16px;cursor:pointer}',
-      '.dsha-cam-pill:hover{background:rgba(255,255,255,.16)}',
-      '.dsha-cam-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:12px 22px calc(16px + env(safe-area-inset-bottom,0px))}',
-      '.dsha-cam-shutter{width:74px;height:74px;flex:none;display:grid;place-items:center;padding:0;border:4px solid var(--dsw-alias-border-l2,#d9dbe0);border-radius:999px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);cursor:pointer}',
-      '.dsha-cam-shutter::after{content:"";display:block;width:54px;height:54px;border-radius:999px;background:var(--dsw-alias-label-primary,#111)}',
-      '.dsha-cam-keepalive{position:absolute;left:1px;top:1px;width:2px;height:2px;border-radius:2px;background:rgba(0,0,0,.02);pointer-events:none;animation:dsha-cam-tick 1s linear infinite}',
-      '@keyframes dsha-cam-tick{0%{transform:translate3d(0,0,0)}50%{transform:translate3d(0,1px,0)}100%{transform:translate3d(0,0,0)}}',
-      '.dsha-cam-shutter:hover:not(:disabled)::after{transform:scale(.94)}',
-      '.dsha-cam-shutter:disabled{opacity:.45;cursor:default}',
-      '.dsha-cam-error{margin:0 12px 10px;font-size:12px;line-height:17px;color:var(--dsw-alias-state-error-primary)}',
-      '.dsha-cam-file{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}',
-      '@media (max-width:560px){.dsha-cam-head{min-height:42px;padding:2px 12px 4px}.dsha-cam-stage{height:min(44vh,380px);margin:2px 8px 0}.dsha-cam-foot{padding:10px 16px calc(14px + env(safe-area-inset-bottom,0px))}.dsha-cam-shutter{width:72px;height:72px}.dsha-cam-shutter::after{width:52px;height:52px}.dsha-cam-iconBtn.is-wide{width:48px;height:48px}}',
+      '.dsha-cam-root{display:inline-flex;align-items:center}',
+      '.dsha-cam-trigger{width:28px;height:28px;flex:none;display:grid;place-items:center;padding:0;border:none;border-radius:999px;cursor:pointer;color:var(--dsw-alias-label-primary,#111);background:var(--dsw-specific-selector,var(--dsw-alias-bg-layer-2,#f2f3f5));transition:background-color .1s}',
+      '.dsha-cam-trigger:hover{background:var(--dsw-alias-interactive-bg-hover-solid,var(--dsw-alias-bg-layer-2,#f2f3f5))}',
+      '.dsha-cam-trigger:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#1a73e8);outline-offset:2px}',
+      '.dsha-cam-trigger:disabled{opacity:.5;cursor:default}',
+      '.dsha-cam-file{position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none}',
     ].join('')
 
     // ---------------------------------------------------------------------
@@ -1471,25 +433,10 @@ window.__ModuleLoader__.load({
               return h(CameraTrigger, {
                 ctx: ctx,
                 sessionId: props.sessionId,
-                // The composer hands the draft attachment API and the live
-                // input store to this seat; dropping them here silently
-                // reduces every delivery to "no attachment API".
+                // The composer hands the draft attachment API to this seat;
+                // dropping it here reduces every delivery to "no API".
                 inputActions: props.inputActions,
-                useInput: props.useInput,
               })
-            },
-          )
-        })
-
-        ctx.slots.inject('shell.overlay', function () {
-          return ctx.slots.register(
-            {
-              name: 'shell.overlay',
-              id: 'dsha-camera-sheet',
-              order: 50,
-            },
-            function CameraOverlaySlot() {
-              return h(CameraOverlay, { ctx: ctx })
             },
           )
         })
