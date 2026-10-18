@@ -79,7 +79,8 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': '若打开的是「安全访问 / 相册」，点左上角的相机图标可直接拍；注意系统相机会自己往相册存一份，插件无法阻止。',
         'camera.label': '摄像头',
         'camera.auto': '自动选择',
-        'lag.hint': '实测的采集→显示延迟；超过 600ms 会尝试自动冲刷积压帧',
+        'fps.hint': '取景画面每秒真实刷新的次数；低于 12 说明在掉帧',
+        'stage.tapFlush': '轻点画面可重建播放器（不重开相机），用来清掉积压的帧',
         'retry': '重试',
         'copyAddress': '复制地址',
         'copied': '已复制',
@@ -111,7 +112,8 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': 'If the album opens instead, tap the camera tile in its top-left corner to shoot — and note the system camera app keeps its own copy in the album.',
         'camera.label': 'Camera',
         'camera.auto': 'Automatic',
-        'lag.hint': 'Measured capture-to-display latency; above 600 ms the sheet flushes queued frames',
+        'fps.hint': 'Real refresh rate of the viewfinder; below 12 means it is dropping frames',
+        'stage.tapFlush': 'Tap the preview to rebuild the player (the camera stays open) and drop queued frames',
         'retry': 'Retry',
         'copyAddress': 'Copy address',
         'copied': 'Copied',
@@ -758,13 +760,13 @@ window.__ModuleLoader__.load({
         [attempt, deviceId, facing, sessionId],
       )
 
-      // 峰值延迟读数（毫秒），每秒刷新一次。
-      const [lagMs, setLagMs] = useState(0)
-      const [flushes, setFlushes] = useState(0)
+      // 实时帧率读数：rVFC 每秒回调几次，就是取景画面真正刷新了几次。
+      const [fps, setFps] = useState(0)
+      const [flushing, setFlushing] = useState(0)
 
       /**
        * 重建播放器但不重开相机：把 srcObject 摘掉再挂回去，Chromium 会丢掉已经
-       * 积压在播放器里的帧。用于延迟持续偏高时自救。
+       * 积压在播放器里的帧。轻点取景区即可触发，用来区分"播放器积压"和"相机侧丢帧"。
        */
       const flushPreview = useCallback(function () {
         const video = videoRef.current
@@ -781,7 +783,7 @@ window.__ModuleLoader__.load({
               if (played && typeof played.catch === 'function') played.catch(function () {})
             })
           })
-          setFlushes(function (value) {
+          setFlushing(function (value) {
             return value + 1
           })
         } catch (error) {
@@ -799,41 +801,23 @@ window.__ModuleLoader__.load({
           let frames = 0
           let handle = 0
           let last = performance.now()
-          let lag = 0
-          let slowSeconds = 0
-          let lastFlush = 0
-          const tick = function (now, meta) {
+          const tick = function () {
             frames += 1
-            if (meta && typeof meta.mediaTime === 'number' && meta.mediaTime > 0) {
-              const estimate = now - meta.mediaTime * 1000
-              // 时基不一致时会算出荒唐值，直接忽略。
-              if (estimate > -5000 && estimate < 30000) lag = estimate
-            }
             handle = video.requestVideoFrameCallback(tick)
           }
           handle = video.requestVideoFrameCallback(tick)
           const timer = setInterval(function () {
             const now = performance.now()
             const seconds = Math.max(0.001, (now - last) / 1000)
-            const fps = frames / seconds
+            const measured = frames / seconds
             frames = 0
             last = now
-            setLagMs(Math.max(0, Math.round(lag)))
-            if (lag > 600) slowSeconds += 1
-            else slowSeconds = 0
-            // 连续 3 秒高延迟才动手，且两次冲刷至少隔 8 秒，避免频繁闪。
-            if (slowSeconds >= 3 && now - lastFlush > 8000) {
-              slowSeconds = 0
-              lastFlush = now
-              flushPreview()
-            }
+            setFps(Math.round(measured))
             try {
               console.log(
                 '[dsha-camera] fps=' +
-                  fps.toFixed(1) +
-                  ' lag=' +
-                  Math.round(lag) +
-                  'ms size=' +
+                  measured.toFixed(1) +
+                  ' size=' +
                   video.videoWidth +
                   'x' +
                   video.videoHeight,
@@ -849,7 +833,7 @@ window.__ModuleLoader__.load({
             }
           }
         },
-        [flushPreview, phase],
+        [phase],
       )
 
       // Escape closes the panel before anything else consumes it.
@@ -1003,14 +987,14 @@ window.__ModuleLoader__.load({
             h('span', { className: 'dsha-cam-title' }, t('panel.title')),
             h('span', { className: 'dsha-cam-hint' }, t('panel.hint')),
           ),
-          lagMs > 0
+          fps > 0
             ? h(
                 'span',
                 {
-                  className: 'dsha-cam-lag' + (lagMs > 400 ? ' is-slow' : ''),
-                  title: t('lag.hint'),
+                  className: 'dsha-cam-lag' + (fps < 12 ? ' is-slow' : ''),
+                  title: t('fps.hint'),
                 },
-                lagMs + 'ms',
+                fps + ' fps',
               )
             : null,
           h(
@@ -1046,7 +1030,12 @@ window.__ModuleLoader__.load({
         ),
         h(
           'div',
-          { className: 'dsha-cam-stage', 'data-phase': phase },
+          {
+            className: 'dsha-cam-stage',
+            'data-phase': phase,
+            title: phase === 'live' ? t('stage.tapFlush') : undefined,
+            onClick: phase === 'live' ? flushPreview : undefined,
+          },
           h('video', {
             ref: videoRef,
             className: 'dsha-cam-video' + (facing === 'user' ? ' is-mirrored' : ''),
