@@ -824,12 +824,28 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      // 看门狗：实测相机源几秒后会被降到约 1fps（读数 1/1/120·1），而重开相机
+      // 能恢复。帧率连续两秒低于 8 就自动重开一次，带 6 秒冷却与次数上限。
+      const lastRestartRef = useRef(0)
+      const restartCountRef = useRef(0)
+      const restartStream = useCallback(function () {
+        const now = performance.now()
+        if (now - lastRestartRef.current < 6000) return
+        if (restartCountRef.current >= 20) return
+        lastRestartRef.current = now
+        restartCountRef.current += 1
+        setAttempt(function (value) {
+          return value + 1
+        })
+      }, [])
+
       // 每秒统计一次：呈现（rVFC）、解码（getVideoPlaybackQuality）、界面（rAF）。
       useEffect(
         function () {
           if (phase !== 'live') return undefined
           const video = videoRef.current
           if (!video || typeof video.requestVideoFrameCallback !== 'function') return undefined
+          let slowSeconds = 0
           let presented = 0
           let mini = 0
           let ui = 0
@@ -880,6 +896,12 @@ window.__ModuleLoader__.load({
             mini = 0
             ui = 0
             last = now
+            if (presentedRate < 8) slowSeconds += 1
+            else slowSeconds = 0
+            if (slowSeconds >= 2) {
+              slowSeconds = 0
+              restartStream()
+            }
             setMeter({
               v: Math.round(presentedRate),
               q: decodedRate < 0 ? -1 : Math.round(decodedRate),
@@ -911,7 +933,7 @@ window.__ModuleLoader__.load({
             if (rafHandle) cancelAnimationFrame(rafHandle)
           }
         },
-        [phase],
+        [phase, restartStream],
       )
 
       // Escape closes the panel before anything else consumes it.

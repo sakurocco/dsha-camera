@@ -145,6 +145,7 @@ dsha-camera/
 
 ## 更新记录
 
+- **1.0.13** —— 实测确认相机源在几秒后被降到 1fps（四项读数 `1/1/120·1`：大小两个视频元素都只有 1 帧，界面 120 帧）。加看门狗：呈现帧率连续 2 秒低于 8 就自动重开相机一次（6 秒冷却、单次会话最多 20 次），重开后恢复流畅。
 - **1.0.12** —— 加一个 64×48 的「小窗」复用同一个流做对照：右上小窗正常（约 30）而主画面只有 1 → 该 `<video>` 被判定不可见；两个都 1 → 相机源头每秒只送 1 帧。读数变为四项。
 - **1.0.11** —— 去掉刷新按钮；标题读数改成三项「呈现 / 解码 / 界面」：呈现低而解码高＝播放器/合成层被降到 1 fps，两个都低＝相机没在送帧。用来给 1 fps 定性。
 - **1.0.10** —— 快门恢复圆形（`border-radius:50%` 在部分 WebView 失效，改 `999px`）；底部右侧新增明确的**刷新按钮**（只重建播放器、不重开相机）；另加一个 1px 的合成器保活动画，避免页面静止后视频被 Chromium 按“后台”降到 1 fps。
@@ -262,6 +263,7 @@ Editing needs no build: change `client.js`, reload the page. Tune `MAX_EDGE` and
 
 ### Changelog
 
+- **1.0.13** — measurements prove the camera source itself drops to 1 fps after a few seconds (`1/1/120·1`: both video elements at 1, UI at 120). A watchdog now reopens the camera when the presented rate stays below 8 for two seconds (6 s cooldown, at most 20 times per session), which restores smoothness.
 - **1.0.12** — a 64×48 mini preview shares the same stream as a control: a healthy mini (~30) with a 1 fps main means the element is judged invisible; both at 1 means the camera source sends one frame per second. The meter now shows four numbers.
 - **1.0.11** — the refresh button is gone; the header meter now reads **presented / decoded / UI** frames per second, so 1 fps can be attributed: low presented with high decoded means the player is throttled, both low means the camera stopped sending frames.
 - **1.0.10** — the shutter is a circle again (`border-radius:50%` silently fails in some WebViews, `999px` works), the footer gained an explicit **refresh button** (rebuilds the player only, the camera stays open), and a 1 px compositor keep-alive animation stops Chromium from demoting the video to its 1 fps background tick.
