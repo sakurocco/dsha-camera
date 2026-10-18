@@ -275,8 +275,9 @@ window.__ModuleLoader__.load({
       try {
         if (typeof DataTransfer !== 'function') return false
         const editor =
-          document.querySelector('[data-lexical-editor="true"]') ||
-          document.querySelector('[contenteditable="true"]')
+          document.querySelector('[data-lexical-editor]') ||
+          document.querySelector('[contenteditable]') ||
+          document.querySelector('[role="textbox"][contenteditable]')
         if (!editor) return false
         const transfer = new DataTransfer()
         transfer.items.add(file)
@@ -1176,7 +1177,15 @@ window.__ModuleLoader__.load({
               order: 10,
             },
             function CameraTriggerSlot(props) {
-              return h(CameraTrigger, { ctx: ctx, sessionId: props.sessionId })
+              return h(CameraTrigger, {
+                ctx: ctx,
+                sessionId: props.sessionId,
+                // The composer hands the draft attachment API and the live
+                // input store to this seat; dropping them here silently
+                // reduces every delivery to "no attachment API".
+                inputActions: props.inputActions,
+                useInput: props.useInput,
+              })
             },
           )
         })
