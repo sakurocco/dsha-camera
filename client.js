@@ -79,6 +79,7 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': '若打开的是「安全访问 / 相册」，点左上角的相机图标可直接拍；注意系统相机会自己往相册存一份，插件无法阻止。',
         'camera.label': '摄像头',
         'camera.auto': '自动选择',
+        'lag.hint': '实测的采集→显示延迟；超过 600ms 会尝试自动冲刷积压帧',
         'retry': '重试',
         'copyAddress': '复制地址',
         'copied': '已复制',
@@ -110,6 +111,7 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': 'If the album opens instead, tap the camera tile in its top-left corner to shoot — and note the system camera app keeps its own copy in the album.',
         'camera.label': 'Camera',
         'camera.auto': 'Automatic',
+        'lag.hint': 'Measured capture-to-display latency; above 600 ms the sheet flushes queued frames',
         'retry': 'Retry',
         'copyAddress': 'Copy address',
         'copied': 'Copied',
@@ -756,8 +758,39 @@ window.__ModuleLoader__.load({
         [attempt, deviceId, facing, sessionId],
       )
 
-      // 诊断：每秒把真实渲染帧率打到 console，手机端可用 `adb logcat -s chromium:V` 抓。
-      // 帧率随时间下滑 → 呈现/合成路径；帧率稳定但画面滞后 → 采集端缓冲。
+      // 峰值延迟读数（毫秒），每秒刷新一次。
+      const [lagMs, setLagMs] = useState(0)
+      const [flushes, setFlushes] = useState(0)
+
+      /**
+       * 重建播放器但不重开相机：把 srcObject 摘掉再挂回去，Chromium 会丢掉已经
+       * 积压在播放器里的帧。用于延迟持续偏高时自救。
+       */
+      const flushPreview = useCallback(function () {
+        const video = videoRef.current
+        const stream = streamRef.current
+        if (!video || !stream) return
+        try {
+          video.srcObject = null
+          requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+              const target = videoRef.current
+              if (!target) return
+              target.srcObject = stream
+              const played = target.play()
+              if (played && typeof played.catch === 'function') played.catch(function () {})
+            })
+          })
+          setFlushes(function (value) {
+            return value + 1
+          })
+        } catch (error) {
+          // 冲刷失败就保持现状，下一轮再试。
+        }
+      }, [])
+
+      // 每秒读一次「采集→显示」的真实延迟：rVFC 的 mediaTime 与 performance.now()
+      // 同一时基，差值就是这一帧从采集到呈现花掉的时间。
       useEffect(
         function () {
           if (phase !== 'live') return undefined
@@ -766,30 +799,48 @@ window.__ModuleLoader__.load({
           let frames = 0
           let handle = 0
           let last = performance.now()
-          const tick = function () {
+          let lag = 0
+          let slowSeconds = 0
+          let lastFlush = 0
+          const tick = function (now, meta) {
             frames += 1
+            if (meta && typeof meta.mediaTime === 'number' && meta.mediaTime > 0) {
+              const estimate = now - meta.mediaTime * 1000
+              // 时基不一致时会算出荒唐值，直接忽略。
+              if (estimate > -5000 && estimate < 30000) lag = estimate
+            }
             handle = video.requestVideoFrameCallback(tick)
           }
           handle = video.requestVideoFrameCallback(tick)
           const timer = setInterval(function () {
             const now = performance.now()
             const seconds = Math.max(0.001, (now - last) / 1000)
+            const fps = frames / seconds
+            frames = 0
+            last = now
+            setLagMs(Math.max(0, Math.round(lag)))
+            if (lag > 600) slowSeconds += 1
+            else slowSeconds = 0
+            // 连续 3 秒高延迟才动手，且两次冲刷至少隔 8 秒，避免频繁闪。
+            if (slowSeconds >= 3 && now - lastFlush > 8000) {
+              slowSeconds = 0
+              lastFlush = now
+              flushPreview()
+            }
             try {
               console.log(
                 '[dsha-camera] fps=' +
-                  (frames / seconds).toFixed(1) +
-                  ' size=' +
+                  fps.toFixed(1) +
+                  ' lag=' +
+                  Math.round(lag) +
+                  'ms size=' +
                   video.videoWidth +
                   'x' +
-                  video.videoHeight +
-                  ' ready=' +
-                  video.readyState,
+                  video.videoHeight,
               )
             } catch (error) {
               // Logging must never disturb the preview.
             }
-            frames = 0
-            last = now
           }, 1000)
           return function () {
             clearInterval(timer)
@@ -798,7 +849,7 @@ window.__ModuleLoader__.load({
             }
           }
         },
-        [phase],
+        [flushPreview, phase],
       )
 
       // Escape closes the panel before anything else consumes it.
@@ -952,6 +1003,16 @@ window.__ModuleLoader__.load({
             h('span', { className: 'dsha-cam-title' }, t('panel.title')),
             h('span', { className: 'dsha-cam-hint' }, t('panel.hint')),
           ),
+          lagMs > 0
+            ? h(
+                'span',
+                {
+                  className: 'dsha-cam-lag' + (lagMs > 400 ? ' is-slow' : ''),
+                  title: t('lag.hint'),
+                },
+                lagMs + 'ms',
+              )
+            : null,
           h(
             'button',
             {
@@ -1247,6 +1308,8 @@ window.__ModuleLoader__.load({
       '.dsha-cam-grabber::after{content:"";position:absolute;left:50%;top:9px;transform:translateX(-50%);width:44px;height:5px;border-radius:999px;background:var(--dsw-alias-border-l2,#d9dbe0)}',
       '.dsha-cam-head{display:flex;align-items:center;gap:10px;flex:none;min-height:44px;padding:2px 14px 6px}',
       '.dsha-cam-closeBtn{width:40px;height:40px;flex:none;margin-left:auto;display:grid;place-items:center;padding:0;border:1px solid var(--dsw-alias-border-l1,#e5e6eb);border-radius:999px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-primary,#111);cursor:pointer}',
+      '.dsha-cam-lag{flex:none;margin-left:auto;padding:2px 8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2,#f2f3f5);color:var(--dsw-alias-label-secondary,#6b7280);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}',
+      '.dsha-cam-lag.is-slow{background:rgba(255,149,0,.18);color:#b25f00;font-weight:600}',
       '.dsha-cam-closeBtn:hover{background:var(--dsw-alias-border-l1)}',
       '.dsha-cam-mark{display:grid;place-items:center;width:24px;height:24px;flex:none;border-radius:8px;color:var(--dsw-alias-brand-primary,#1a73e8);background:var(--dsw-alias-bg-layer-2,#f2f3f5)}',
       '.dsha-cam-headText{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}',

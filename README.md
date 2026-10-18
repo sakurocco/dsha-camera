@@ -145,6 +145,7 @@ dsha-camera/
 
 ## 更新记录
 
+- **1.0.8** —— 面板标题右侧显示**实测延迟**（`requestVideoFrameCallback` 的 `mediaTime` 与 `performance.now()` 的差值），超过 600ms 连续 3 秒就自动重建播放器冲掉积压帧（不重开相机，每次至少间隔 8 秒）。依据：`adb` 采样显示渲染进程几乎空闲、相机 HAL 占 92% 且出现 `VideoCaptureCamera2` 锁竞争，说明积压发生在采集→呈现链路而不是我们的绘制。
 - **1.0.7** —— 分辨率不是根因，去掉「流畅/清晰」切换，预览统一 1280×960@30；改从**呈现路径**排查：浮层底改为不透明（合成器可做遮挡剔除，不再每帧混合背后的整页）、取景区去掉圆角裁剪（每帧少一次遮罩）、面板不再是滚动容器；并在 console 每秒输出真实渲染帧率，可用 `adb logcat -s chromium:V` 抓取。
 - **1.0.6** —— 延迟根治：预览改为低负载预设（流畅 640×480@24 / 清晰 1280×960@24，面板里一键切换并记住），按快门时才临时把轨道提到 1920×1440 取静帧。原因是手机 WebView 合成不了高分辨率流时，Chromium 会排队画不完的视频帧，表现就是「一开始顺、几秒后固定滞后约 1 秒」。
 - **1.0.5** —— 取景面板重做：关闭键改成 40px 独立按钮（点顶部抓手也能关）、面板按 `100dvh` 布局避免底部被系统栏裁掉；快门从 52px 放大到 72px；预览参数从 1920×1440 降到 1280×960@30，解决手机上取景卡顿。
@@ -257,6 +258,7 @@ Editing needs no build: change `client.js`, reload the page. Tune `MAX_EDGE` and
 
 ### Changelog
 
+- **1.0.8** — the sheet header now shows the **measured latency** (`requestVideoFrameCallback`'s `mediaTime` against `performance.now()`), and when it stays above 600 ms for three seconds the player is rebuilt to drop queued frames (the camera is not reopened; at most once per 8 s). Basis: `adb` sampling showed the renderer nearly idle while the camera HAL sat at 92 % with `VideoCaptureCamera2` lock contention, so the backlog is in the capture-to-presentation path, not our drawing.
 - **1.0.7** — resolution was not the cause: the Smooth/Sharp switch is gone and the preview is fixed at 1280×960@30. The investigation moved to the presentation path — the layer is now opaque (the compositor can cull the page behind instead of blending it every frame), the stage no longer clips with rounded corners (one mask less per frame), and the sheet is no longer a scroll container. The preview also logs its real render rate once per second for `adb logcat -s chromium:V`.
 - **1.0.6** — latency fix: the preview now runs a low-load preset (Smooth 640×480@24 / Sharp 1280×960@24, toggled in the sheet and remembered), and the track is bumped to 1920×1440 only while a still is grabbed. Reason: when a phone WebView cannot composite the stream, Chromium queues the frames it cannot paint, which shows up as "smooth at first, then a fixed ~1 s lag".
 - **1.0.5** — sheet rework: a dedicated 40px close button (the grabber closes too), a `100dvh` layer so the footer is no longer clipped by the system bars, a 72px shutter, and a 1280×960@30 preview instead of 1920×1440 to stop the phone dropping frames.
