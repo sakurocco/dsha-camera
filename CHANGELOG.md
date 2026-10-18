@@ -3,6 +3,11 @@
 All notable changes to `dsha-camera` are recorded here.
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## 1.1.1
+
+- 描述统一：README、插件简介（`locale/*.json`）和包描述里所有「长按打开相册」的说法全部删除；
+- 代码里对应的长按逻辑与相册输入一并移除，插件只保留一个行为：点击按钮 → 系统相机 → 照片进入输入框。
+
 ## 1.1.0
 
 - **行为变更**：移除页内取景框，改为「点击按钮 → 系统相机 → 照片进草稿」；长按 0.6 秒打开相册。

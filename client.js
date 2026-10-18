@@ -7,8 +7,7 @@
  * control. Tapping it opens the system camera through
  * `<input type="file" accept="image/*" capture="environment">`; the photo the
  * camera returns goes straight into the draft — the same attachment path the
- * Harness uses for a dropped or pasted image. Long-press opens the album
- * picker instead.
+ * Harness uses for a dropped or pasted image.
  *
  * Why there is no in-page viewfinder
  * ----------------------------------
@@ -38,8 +37,6 @@ window.__ModuleLoader__.load({
 
     /** Image MIME types the composer accepts as image drafts. */
     const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
-    /** Long-press delay that switches the button to the album picker. */
-    const HOLD_MS = 600
 
     // ---------------------------------------------------------------------
     // Copy
@@ -47,8 +44,8 @@ window.__ModuleLoader__.load({
 
     const COPY = {
       zh: {
-        'trigger.open': '拍照（长按选相册）',
-        'trigger.hint': '单击调用系统相机，长按打开相册',
+        'trigger.open': '拍照上传',
+        'trigger.hint': '打开系统相机，照片直接进入输入框',
         'error.bridge': '没找到会话的附件接口，请确认 Harness 版本不低于 0.2.0-rc.2',
         'error.locked': '输入框暂时不接受附件（状态：{phase}），等这次发送结束后再试。',
         'error.api': '当前 Harness 没有向插件暴露附件接口，照片没能放进输入框。',
@@ -56,8 +53,8 @@ window.__ModuleLoader__.load({
         'error.session': '当前没有可用的会话',
       },
       en: {
-        'trigger.open': 'Take a photo (hold for album)',
-        'trigger.hint': 'Tap for the system camera, hold for the album',
+        'trigger.open': 'Take a photo',
+        'trigger.hint': 'Open the system camera and drop the photo into the composer',
         'error.bridge': 'The draft attachment API is missing; Harness 0.2.0-rc.2 or newer is required',
         'error.locked': 'The composer is not accepting attachments right now (phase: {phase}). Try again once the current send settles.',
         'error.api': 'This Harness build does not expose the attachment API to plugins, so the photo could not be placed in the draft.',
@@ -270,15 +267,7 @@ window.__ModuleLoader__.load({
       )
 
       const captureRef = useRef(null)
-      const albumRef = useRef(null)
-      const holdRef = useRef(0)
       const [busy, setBusy] = useState(false)
-
-      useEffect(function () {
-        return function () {
-          if (holdRef.current) window.clearTimeout(holdRef.current)
-        }
-      }, [])
 
       const onPicked = useCallback(
         async function (event) {
@@ -303,49 +292,6 @@ window.__ModuleLoader__.load({
         if (captureRef.current) captureRef.current.click()
       }, [])
 
-      const openAlbum = useCallback(function () {
-        if (albumRef.current) albumRef.current.click()
-      }, [])
-
-      const onPointerDown = useCallback(
-        function () {
-          if (busy) return
-          if (holdRef.current) window.clearTimeout(holdRef.current)
-          holdRef.current = window.setTimeout(function () {
-            holdRef.current = 0
-            openAlbum()
-          }, HOLD_MS)
-        },
-        [busy, openAlbum],
-      )
-
-      const onPointerUp = useCallback(
-        function () {
-          if (holdRef.current) {
-            window.clearTimeout(holdRef.current)
-            holdRef.current = 0
-            openCapture()
-          }
-        },
-        [openCapture],
-      )
-
-      const cancelHold = useCallback(function () {
-        if (holdRef.current) {
-          window.clearTimeout(holdRef.current)
-          holdRef.current = 0
-        }
-      }, [])
-
-      const onKeyDown = useCallback(
-        function (event) {
-          if (event.key !== 'Enter' && event.key !== ' ') return
-          event.preventDefault()
-          openCapture()
-        },
-        [openCapture],
-      )
-
       return h(
         'span',
         { className: 'dsha-cam-root' },
@@ -357,16 +303,7 @@ window.__ModuleLoader__.load({
             'aria-label': t('trigger.open'),
             title: t('trigger.hint'),
             disabled: busy,
-            onPointerDown: onPointerDown,
-            onPointerUp: onPointerUp,
-            onPointerLeave: cancelHold,
-            onPointerCancel: cancelHold,
-            onKeyDown: onKeyDown,
-            onClick: function (event) {
-              // The pointer handlers already opened a picker; keep the click
-              // from firing a second one on browsers that emit both.
-              event.preventDefault()
-            },
+            onClick: openCapture,
           },
           h(IconCamera, { size: 16 }),
         ),
@@ -376,15 +313,6 @@ window.__ModuleLoader__.load({
           type: 'file',
           accept: 'image/*',
           capture: 'environment',
-          tabIndex: -1,
-          'aria-hidden': true,
-          onChange: onPicked,
-        }),
-        h('input', {
-          ref: albumRef,
-          className: 'dsha-cam-file',
-          type: 'file',
-          accept: 'image/*',
           tabIndex: -1,
           'aria-hidden': true,
           onChange: onPicked,
