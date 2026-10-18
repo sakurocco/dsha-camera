@@ -79,7 +79,7 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': '若打开的是「安全访问 / 相册」，点左上角的相机图标可直接拍；注意系统相机会自己往相册存一份，插件无法阻止。',
         'camera.label': '摄像头',
         'camera.auto': '自动选择',
-        'fps.hint': '三个数字：呈现 / 解码 / 界面（每秒帧数）。呈现低而解码高＝播放器被降频；两个都低＝相机没在送帧',
+        'fps.hint': '四个数字：大窗呈现 / 解码 / 界面 / 右上小窗呈现（每秒帧数）。小窗正常而大窗为 1＝该元素被判定不可见；两个都为 1＝相机源头只送 1 帧',
         'flush': '刷新画面（只重建播放器，不重开相机）',
         'stage.tapFlush': '轻点画面可重建播放器（不重开相机），用来清掉积压的帧',
         'retry': '重试',
@@ -113,7 +113,7 @@ window.__ModuleLoader__.load({
         'stage.pickerHint': 'If the album opens instead, tap the camera tile in its top-left corner to shoot — and note the system camera app keeps its own copy in the album.',
         'camera.label': 'Camera',
         'camera.auto': 'Automatic',
-        'fps.hint': 'Three numbers: presented / decoded / UI frames per second. Low presented with high decoded means the player is throttled; both low means the camera is not sending frames',
+        'fps.hint': 'Four numbers: main presented / decoded / UI / mini preview, in frames per second. A healthy mini with a 1 fps main means this element is judged not visible; both at 1 means the camera source itself sends one frame per second',
         'flush': 'Refresh the preview (rebuilds the player only, the camera stays open)',
         'stage.tapFlush': 'Tap the preview to rebuild the player (the camera stays open) and drop queued frames',
         'retry': 'Retry',
@@ -694,6 +694,7 @@ window.__ModuleLoader__.load({
       const [copied, setCopied] = useState(false)
 
       const videoRef = useRef(null)
+      const miniRef = useRef(null)
       const streamRef = useRef(null)
       const systemInputRef = useRef(null)
       const albumInputRef = useRef(null)
@@ -741,6 +742,14 @@ window.__ModuleLoader__.load({
                   })
                 }
               }
+              const mini = miniRef.current
+              if (mini) {
+                mini.srcObject = stream
+                const miniPlayed = mini.play()
+                if (miniPlayed && typeof miniPlayed.catch === 'function') {
+                  miniPlayed.catch(function () {})
+                }
+              }
               setPhase('live')
               if (typeof media.enumerateDevices === 'function') {
                 media
@@ -783,9 +792,9 @@ window.__ModuleLoader__.load({
         [attempt, deviceId, facing, sessionId],
       )
 
-      // 三项读数：呈现帧率 / 解码帧率 / 界面刷新率。
-      // 呈现低而解码高 → 播放器或合成层在降频；两项都低 → 相机根本没在送帧。
-      const [meter, setMeter] = useState({ v: 0, q: -1, u: 0 })
+      // 三项读数：呈现 / 解码 / 界面，另加一个小窗的呈现帧率（第 4 个数）。
+      // 小窗 30 而大窗 1 → 元素可见性被判错；两个都 1 → 相机源头只送 1 帧。
+      const [meter, setMeter] = useState({ v: 0, q: -1, u: 0, m: 0 })
       const [flushing, setFlushing] = useState(0)
 
       /**
@@ -822,8 +831,10 @@ window.__ModuleLoader__.load({
           const video = videoRef.current
           if (!video || typeof video.requestVideoFrameCallback !== 'function') return undefined
           let presented = 0
+          let mini = 0
           let ui = 0
           let handle = 0
+          let miniHandle = 0
           let rafHandle = 0
           let lastTotal = -1
           let last = performance.now()
@@ -831,16 +842,28 @@ window.__ModuleLoader__.load({
             presented += 1
             handle = video.requestVideoFrameCallback(tick)
           }
+          const miniTick = function () {
+            mini += 1
+            const element = miniRef.current
+            if (element && typeof element.requestVideoFrameCallback === 'function') {
+              miniHandle = element.requestVideoFrameCallback(miniTick)
+            }
+          }
           const uiTick = function () {
             ui += 1
             rafHandle = requestAnimationFrame(uiTick)
           }
           handle = video.requestVideoFrameCallback(tick)
+          const miniElement = miniRef.current
+          if (miniElement && typeof miniElement.requestVideoFrameCallback === 'function') {
+            miniHandle = miniElement.requestVideoFrameCallback(miniTick)
+          }
           rafHandle = requestAnimationFrame(uiTick)
           const timer = setInterval(function () {
             const now = performance.now()
             const seconds = Math.max(0.001, (now - last) / 1000)
             const presentedRate = presented / seconds
+            const miniRate = mini / seconds
             const uiRate = ui / seconds
             let decodedRate = -1
             if (typeof video.getVideoPlaybackQuality === 'function') {
@@ -854,12 +877,14 @@ window.__ModuleLoader__.load({
               lastTotal = total
             }
             presented = 0
+            mini = 0
             ui = 0
             last = now
             setMeter({
               v: Math.round(presentedRate),
               q: decodedRate < 0 ? -1 : Math.round(decodedRate),
               u: Math.round(uiRate),
+              m: Math.round(miniRate),
             })
             try {
               console.log(
@@ -1048,7 +1073,7 @@ window.__ModuleLoader__.load({
                   className: 'dsha-cam-lag' + (meter.v < 12 ? ' is-slow' : ''),
                   title: t('fps.hint'),
                 },
-                meter.v + ' / ' + (meter.q >= 0 ? meter.q : '–') + ' / ' + meter.u,
+                meter.v + ' / ' + (meter.q >= 0 ? meter.q : '–') + ' / ' + meter.u + ' · ' + meter.m,
               )
             : null,
           h(
@@ -1098,6 +1123,13 @@ window.__ModuleLoader__.load({
             muted: true,
             disablePictureInPicture: true,
             disableRemotePlayback: true,
+          }),
+          h('video', {
+            ref: miniRef,
+            className: 'dsha-cam-mini',
+            autoPlay: true,
+            playsInline: true,
+            muted: true,
           }),
           phase === 'live'
             ? null
@@ -1369,6 +1401,7 @@ window.__ModuleLoader__.load({
       '.dsha-cam-stage{position:relative;flex:0 1 auto;margin:2px 10px 0;height:min(46vh,420px);min-height:120px;background:#0a0c10}',
       '.dsha-cam-video{width:100%;height:100%;display:block;object-fit:cover;background:#0a0c10}',
       '.dsha-cam-video.is-mirrored{transform:scaleX(-1)}',
+      '.dsha-cam-mini{position:absolute;right:6px;top:6px;width:64px;height:48px;object-fit:cover;border:1px solid rgba(255,255,255,.55);border-radius:6px;background:#000;z-index:2;pointer-events:none}',
       '.dsha-cam-stage[data-phase="starting"] .dsha-cam-video,.dsha-cam-stage[data-phase="blocked"] .dsha-cam-video,.dsha-cam-stage[data-phase="unsupported"] .dsha-cam-video{visibility:hidden}',
       '.dsha-cam-stageNote{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px;text-align:center}',
       '.dsha-cam-stageText{margin:0;max-width:34ch;font-size:12.5px;line-height:19px;color:#ccd2dc}',
