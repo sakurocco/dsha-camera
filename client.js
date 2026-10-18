@@ -68,6 +68,7 @@ window.__ModuleLoader__.load({
         'stage.unsupported': '当前环境不提供摄像头数据流',
         'stage.useFallback': '可以改用系统相机拍摄，或从相册选择。',
         'stage.desktopShell': '桌面 App 窗口按策略只放行麦克风，摄像头请求会被拒绝。用 Chrome / Edge 打开同一个地址即可看到取景框。',
+        'stage.pickerHint': '若打开的是「安全访问 / 相册」，点左上角的相机图标就能直接拍。',
         'camera.label': '摄像头',
         'camera.auto': '自动选择',
         'retry': '重试',
@@ -97,6 +98,7 @@ window.__ModuleLoader__.load({
         'stage.unsupported': 'This environment exposes no camera stream',
         'stage.useFallback': 'Use the system camera, or pick an image from the album.',
         'stage.desktopShell': 'The desktop app window grants the microphone only, so camera requests are refused. Open the same address in Chrome or Edge to get the viewfinder.',
+        'stage.pickerHint': 'If the album opens instead, tap the camera tile in its top-left corner to shoot.',
         'camera.label': 'Camera',
         'camera.auto': 'Automatic',
         'retry': 'Retry',
@@ -166,58 +168,59 @@ window.__ModuleLoader__.load({
     }
 
     // ---------------------------------------------------------------------
-    // Panel state (one entry per Session, shared by the button and the panel)
+    // Sheet state (one floating sheet for the whole frame)
     // ---------------------------------------------------------------------
 
-    const PANELS = new Map()
-
-    function panelEntry(sessionId) {
-      let entry = PANELS.get(sessionId)
-      if (!entry) {
-        entry = { open: false, listeners: new Set() }
-        PANELS.set(sessionId, entry)
-      }
-      return entry
+    /**
+     * The capture surface lives in the frame-wide overlay layer, not inside
+     * the composer: a composer-sized seat clips the footer (and with it the
+     * shutter) on phones, which is exactly what happened in the dock version.
+     */
+    const SHEET = {
+      open: false,
+      sessionId: undefined,
+      inputActions: undefined,
+      listeners: new Set(),
     }
 
-    function isPanelOpen(sessionId) {
-      if (sessionId === undefined) return false
-      return panelEntry(sessionId).open
-    }
-
-    function setPanelOpen(sessionId, open) {
-      if (sessionId === undefined) return
-      const entry = panelEntry(sessionId)
-      if (entry.open === open) return
-      entry.open = open
-      entry.listeners.forEach(function (listener) {
+    function publishSheet() {
+      SHEET.listeners.forEach(function (listener) {
         try {
           listener()
         } catch (error) {
-          // A broken listener must not keep the panel from closing.
+          // One broken listener must not keep the sheet from opening or closing.
         }
       })
     }
 
-    function usePanelOpen(sessionId) {
+    function openSheet(sessionId, inputActions) {
+      SHEET.open = true
+      SHEET.sessionId = sessionId
+      SHEET.inputActions = inputActions
+      publishSheet()
+    }
+
+    function closeSheet() {
+      if (!SHEET.open) return
+      SHEET.open = false
+      SHEET.inputActions = undefined
+      publishSheet()
+    }
+
+    function useSheet() {
       const [, bump] = useState(0)
-      useEffect(
-        function () {
-          if (sessionId === undefined) return undefined
-          const entry = panelEntry(sessionId)
-          const listener = function () {
-            bump(function (value) {
-              return value + 1
-            })
-          }
-          entry.listeners.add(listener)
-          return function () {
-            entry.listeners.delete(listener)
-          }
-        },
-        [sessionId],
-      )
-      return isPanelOpen(sessionId)
+      useEffect(function () {
+        const listener = function () {
+          bump(function (value) {
+            return value + 1
+          })
+        }
+        SHEET.listeners.add(listener)
+        return function () {
+          SHEET.listeners.delete(listener)
+        }
+      }, [])
+      return SHEET
     }
 
     // ---------------------------------------------------------------------
@@ -332,6 +335,15 @@ window.__ModuleLoader__.load({
     function isDesktopShell() {
       try {
         return typeof navigator !== 'undefined' && /Electron/i.test(navigator.userAgent)
+      } catch (error) {
+        return false
+      }
+    }
+
+    /** Android hosts route the capture input through their own file chooser. */
+    function isAndroidHost() {
+      try {
+        return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
       } catch (error) {
         return false
       }
@@ -623,6 +635,17 @@ window.__ModuleLoader__.load({
         [onClose],
       )
 
+      // Hold the page behind the sheet still while it is open.
+      useEffect(function () {
+        const body = document.body
+        if (!body) return undefined
+        const previous = body.style.overflow
+        body.style.overflow = 'hidden'
+        return function () {
+          body.style.overflow = previous
+        }
+      }, [])
+
       // Note: the panel deliberately survives the page being hidden. Opening the
       // system camera or the album backgrounds the page, and unmounting here
       // would discard the photo that is about to come back through the picker.
@@ -714,10 +737,13 @@ window.__ModuleLoader__.load({
       return h(
         'section',
         {
-          className: 'dsha-cam-panel',
+          className: 'dsha-cam-sheet',
+          role: 'dialog',
+          'aria-modal': 'true',
           'aria-label': t('panel.title'),
           'data-phase': phase,
         },
+        h('div', { className: 'dsha-cam-grabber', 'aria-hidden': true }),
         h(
           'header',
           { className: 'dsha-cam-head' },
@@ -789,6 +815,9 @@ window.__ModuleLoader__.load({
                   : null,
                 showFailure && isDesktopShell()
                   ? h('p', { className: 'dsha-cam-stageText is-dim' }, t('stage.desktopShell'))
+                  : null,
+                showFailure && isAndroidHost() && !isDesktopShell()
+                  ? h('p', { className: 'dsha-cam-stageText is-dim' }, t('stage.pickerHint'))
                   : null,
                 showFailure
                   ? h(
@@ -905,12 +934,23 @@ window.__ModuleLoader__.load({
         },
         [tag],
       )
-      const open = usePanelOpen(sessionId)
-      const toggle = useCallback(
+      const sheet = useSheet()
+
+      // Switching Session closes a sheet that belongs to the previous one.
+      useEffect(
         function () {
-          setPanelOpen(sessionId, !isPanelOpen(sessionId))
+          if (SHEET.open && SHEET.sessionId !== sessionId) closeSheet()
         },
         [sessionId],
+      )
+
+      const open = sheet.open && sheet.sessionId === sessionId
+      const toggle = useCallback(
+        function () {
+          if (SHEET.open && SHEET.sessionId === sessionId) closeSheet()
+          else openSheet(sessionId, props.inputActions)
+        },
+        [props.inputActions, sessionId],
       )
 
       return h(
@@ -928,23 +968,29 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function CameraDock(props) {
-      const ctx = props.ctx
-      const sessionId = props.sessionId
-      const open = usePanelOpen(sessionId)
-      const close = useCallback(
-        function () {
-          setPanelOpen(sessionId, false)
-        },
-        [sessionId],
+    /**
+     * Frame-wide overlay entry: scrim plus the bottom sheet. It carries no
+     * Session props of its own, so the trigger hands the active Session and
+     * its `inputActions` over when it opens the sheet.
+     */
+    function CameraOverlay(props) {
+      const sheet = useSheet()
+      if (!sheet.open || sheet.sessionId === undefined) return null
+      return h(
+        'div',
+        { className: 'dsha-cam-layer' },
+        h('div', {
+          className: 'dsha-cam-scrim',
+          'aria-hidden': true,
+          onClick: closeSheet,
+        }),
+        h(CameraPanel, {
+          ctx: props.ctx,
+          sessionId: sheet.sessionId,
+          inputActions: sheet.inputActions,
+          onClose: closeSheet,
+        }),
       )
-      if (!open) return null
-      return h(CameraPanel, {
-        ctx: ctx,
-        sessionId: sessionId,
-        inputActions: props.inputActions,
-        onClose: close,
-      })
     }
 
     // ---------------------------------------------------------------------
@@ -956,13 +1002,16 @@ window.__ModuleLoader__.load({
       '.dsha-cam-trigger:hover{background:var(--dsw-alias-interactive-bg-hover-solid,var(--dsw-alias-bg-layer-2))}',
       '.dsha-cam-trigger[aria-pressed="true"]{color:var(--dsw-alias-brand-primary)}',
       '.dsha-cam-trigger:focus-visible,.dsha-cam-iconBtn:focus-visible,.dsha-cam-pill:focus-visible,.dsha-cam-shutter:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}',
-      '.dsha-cam-panel{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width,100%);margin:0 auto 8px;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1);border-radius:16px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}',
-      '.dsha-cam-head{display:flex;align-items:center;gap:8px;padding:8px 10px 6px}',
+      '.dsha-cam-layer{position:fixed;inset:0;z-index:1000;display:flex;align-items:flex-end;justify-content:center;pointer-events:auto}',
+      '.dsha-cam-scrim{position:absolute;inset:0;background:rgba(0,0,0,.42)}',
+      '.dsha-cam-sheet{position:relative;z-index:1;box-sizing:border-box;width:100%;max-width:640px;max-height:92vh;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-bottom:none;border-radius:18px 18px 0 0;box-shadow:0 -10px 36px rgba(0,0,0,.32);overflow:hidden;padding-bottom:env(safe-area-inset-bottom,0px)}',
+      '.dsha-cam-grabber{width:36px;height:4px;flex:none;margin:8px auto 0;border-radius:999px;background:var(--dsw-alias-border-l2)}',
+      '.dsha-cam-head{display:flex;align-items:center;gap:8px;flex:none;padding:8px 10px 6px}',
       '.dsha-cam-mark{display:grid;place-items:center;width:22px;height:22px;flex:none;border-radius:8px;color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}',
       '.dsha-cam-headText{display:flex;flex-direction:column;gap:1px;min-width:0}',
       '.dsha-cam-title{font-size:13px;font-weight:600;line-height:18px;color:var(--dsw-alias-label-primary)}',
       '.dsha-cam-hint{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-      '.dsha-cam-devices{display:flex;align-items:center;gap:8px;padding:0 12px 8px}',
+      '.dsha-cam-devices{display:flex;align-items:center;gap:8px;flex:none;padding:0 12px 8px}',
       '.dsha-cam-devicesLabel{flex:none;font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary)}',
       '.dsha-cam-select{flex:1;min-width:0;height:26px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer}',
       '.dsha-cam-spacer{width:44px;height:44px;flex:none}',
@@ -970,7 +1019,7 @@ window.__ModuleLoader__.load({
       '.dsha-cam-iconBtn.is-wide{width:44px;height:44px;margin-left:0}',
       '.dsha-cam-iconBtn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}',
       '.dsha-cam-iconBtn:disabled{opacity:.4;cursor:default}',
-      '.dsha-cam-stage{position:relative;margin:0 10px;height:min(44vh,400px);min-height:180px;border-radius:12px;overflow:hidden;background:#0a0c10}',
+      '.dsha-cam-stage{position:relative;flex:0 1 auto;margin:2px 10px 0;height:min(44vh,400px);min-height:120px;border-radius:12px;overflow:hidden;background:#0a0c10}',
       '.dsha-cam-video{width:100%;height:100%;display:block;object-fit:cover;background:#0a0c10}',
       '.dsha-cam-video.is-mirrored{transform:scaleX(-1)}',
       '.dsha-cam-stage[data-phase="starting"] .dsha-cam-video,.dsha-cam-stage[data-phase="blocked"] .dsha-cam-video,.dsha-cam-stage[data-phase="unsupported"] .dsha-cam-video{visibility:hidden}',
@@ -980,14 +1029,14 @@ window.__ModuleLoader__.load({
       '.dsha-cam-stageActions{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:4px}',
       '.dsha-cam-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(255,255,255,.08);color:#eef1f6;font-size:12px;line-height:16px;cursor:pointer}',
       '.dsha-cam-pill:hover{background:rgba(255,255,255,.16)}',
-      '.dsha-cam-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 18px 12px}',
+      '.dsha-cam-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:10px 18px 12px}',
       '.dsha-cam-shutter{width:54px;height:54px;flex:none;display:grid;place-items:center;padding:0;border:3px solid var(--dsw-alias-border-l2);border-radius:50%;background:transparent;cursor:pointer}',
       '.dsha-cam-shutter::after{content:"";display:block;width:38px;height:38px;border-radius:50%;background:var(--dsw-alias-label-primary)}',
       '.dsha-cam-shutter:hover:not(:disabled)::after{transform:scale(.94)}',
       '.dsha-cam-shutter:disabled{opacity:.45;cursor:default}',
       '.dsha-cam-error{margin:0 12px 10px;font-size:12px;line-height:17px;color:var(--dsw-alias-state-error-primary)}',
       '.dsha-cam-file{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}',
-      '@media (max-width:560px){.dsha-cam-stage{height:min(38vh,320px)}.dsha-cam-foot{padding:8px 14px 10px}.dsha-cam-shutter{width:50px;height:50px}.dsha-cam-shutter::after{width:34px;height:34px}}',
+      '@media (max-width:560px){.dsha-cam-sheet{max-height:94vh}.dsha-cam-stage{height:min(42vh,360px);margin:2px 8px 0}.dsha-cam-foot{padding:8px 14px 10px}.dsha-cam-shutter{width:52px;height:52px}.dsha-cam-shutter::after{width:36px;height:36px}}',
     ].join('')
 
     // ---------------------------------------------------------------------
@@ -1020,19 +1069,15 @@ window.__ModuleLoader__.load({
           )
         })
 
-        ctx.slots.inject('conversation.input.dock', function () {
+        ctx.slots.inject('shell.overlay', function () {
           return ctx.slots.register(
             {
-              name: 'conversation.input.dock',
-              id: 'dsha-camera-dock',
-              order: 30,
+              name: 'shell.overlay',
+              id: 'dsha-camera-sheet',
+              order: 50,
             },
-            function CameraDockSlot(props) {
-              return h(CameraDock, {
-                ctx: ctx,
-                sessionId: props.sessionId,
-                inputActions: props.inputActions,
-              })
+            function CameraOverlaySlot() {
+              return h(CameraOverlay, { ctx: ctx })
             },
           )
         })

@@ -19,10 +19,10 @@
 想在手机上把「眼前的东西」直接丢给 agent，现在的流程是：打开相机 App → 拍 → 相册 → 回 Harness → 加号 → 选文件 → 找到那张照片。
 多出来的每一步都在把注意力从对话里拽走，而且照片会永久留在相册里。
 
-**dsha-camera 把这条路压成一次点击**：输入框加号右边多一个相机按钮，点开是一个**展开式取景面板**（不是全屏相机），按下白色快门，照片立刻作为附件出现在输入框附件栏里 —— 和拖一张图进来完全一样，然后你该打字打字。
+**dsha-camera 把这条路压成一次点击**：输入框加号右边多一个相机按钮，点开是一个**底部抽屉式取景面板**（不是全屏相机），按下白色快门，照片立刻作为附件出现在输入框附件栏里 —— 和拖一张图进来完全一样，然后你该打字打字。
 
 - 📷 **加号右侧的相机按钮** —— 就长在输入工具行里，不会多出一个悬浮球。
-- 🪟 **展开式取景框，不接管全屏** —— 面板从输入卡片上方长出来，取景框是中间一条，聊天记录仍然看得见，随时可以改主意。
+- 🪟 **底部抽屉式取景框，不接管全屏** —— 面板从屏幕底部滑出、背景压暗，取景框是中间一条，聊天记录仍看得见；点遮罩、`Esc` 或 ✕ 立刻关闭。
 - 🖼️ **照片直接进草稿** —— 走 Harness 自己的附件通道（`createDrafts` + `addAttachments`），可以和文字、其他图片混排，连拍多张也行。
 - 🚫 **不写入相册 / 下载目录 / 临时文件** —— 帧只在内存里编码成 `File`，发送后由 Harness 作为会话附件保管（模型能看见图片的前提），设备相册全程零增长。
 - 🧩 **双通道自适应** —— 宿主允许摄像头时用内嵌取景框；不允许时（例如当前 DSHA，见下文）同面板自动换成「系统相机 / 相册」，功能不断。
@@ -32,20 +32,18 @@
 ## 界面
 
 ```
-┌──────────────────────────────────────────────┐
-│ 相机图标  拍照上传                     ✕     │  ← 面板头部
-│           只进输入框，不写入相册              │
-├──────────────────────────────────────────────┤
-│                                              │
-│              取 景 框（中间一条）             │  ← 实时预览，高度约 44vh
-│                                              │
-├──────────────────────────────────────────────┤
-│      🖼️              ◯              🔄       │  ← 相册 / 快门 / 翻转
-└──────────────────────────────────────────────┘
-                 ↑ 这块从输入卡片上方展开
-┌──────────────────────────────────────────────┐
-│ +  权限  模型                          ➤     │  ← 原来的输入卡片
-└──────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────┐
+        │                 ▁▁▁▁                     │  ← 抽屉把手，可点遮罩关闭
+        │  📷 拍照上传                        ✕    │
+        │     只进输入框，不写入相册               │
+        ├──────────────────────────────────────────┤
+        │                                          │
+        │            取 景 框（中间一条）           │  ← 实时预览，约 44vh
+        │                                          │
+        ├──────────────────────────────────────────┤
+        │      🖼️              ◯              🔄   │  ← 相册 / 快门 / 翻转
+        └──────────────────────────────────────────┘
+              ↑ 从屏幕底部升起，背景压暗，不接管全屏
 ```
 
 拍照后：面板收起 → 缩略图出现在输入框附件栏 → 按发送（或回车）才真正上传。
@@ -86,11 +84,11 @@ dsh plugin --profile desktop add dsha-camera
 
 | 动作 | 结果 |
 |---|---|
-| 点输入框加号右侧的相机图标 | 展开取景面板，开始尝试打开摄像头 |
+| 点输入框加号右侧的相机图标 | 从底部升起取景面板，开始尝试打开摄像头 |
 | 点白色快门 | 当前帧编码成 JPEG，直接进入输入框草稿，面板收起 |
 | 点左下相册图标 | 从系统相册挑一张，同样进入草稿 |
-| 点右下翻转图标 | 前置 / 后置摄像头切换（前置自动镜像回正） |
-| `Esc` / 右上 ✕ | 关闭面板并立即释放摄像头 |
+| 点右下翻转图标 | 前置 / 后置摄像头切换（前置自动镜像回正）；有多个摄像头时这一格换成设备下拉 |
+| `Esc` / 右上 ✕ / 点遮罩 | 关闭面板并立即释放摄像头 |
 
 ## 兼容性与已知限制（请先读这一段）
 
@@ -105,6 +103,8 @@ dsh plugin --profile desktop add dsha-camera
 | 其它自行编译的 Harness 宿主 | 取决于宿主实现 | 需要 `CAMERA` 权限 + WebView `onPermissionRequest` 放行 |
 
 **「不写入相册」的准确含义**：插件不调用任何下载、不写 `<a download>`、不产生临时文件，帧只存在于内存的 `File` 对象里。点击发送后，Harness 会把图片作为**会话附件**保存到它自己的数据目录（`~/.dsh/attachments` 一类位置）—— 这是模型能读到图片的前提，不属于相册或用户可见的存储占用。
+
+**「系统相机」为什么有时先打开相册**：网页请求系统相机只有 `<input type="file" accept="image/*" capture="environment">` 这一条路，`capture` 只是给宿主的一个提示。DSHA 的 WebView 会把这类请求交给它自己的照片选择器（那个页面的左上角有相机入口，点一下就能拍）。是否**直接**拉起相机由宿主的 `onShowFileChooser` / `isCaptureEnabled()` 决定，网页侧无法强制；要一步到位，需要 DSHA 处理 `isCaptureEnabled`，或者补上 `CAMERA` 权限让内嵌取景框可用。
 
 **为什么按钮在「加号右侧」但不一定紧贴加号**：Harness 的 `+` 是宿主硬编码的按钮，它右侧唯一可扩展的座位是 `conversation.input.left`，宿主会把它渲染在附件 / 权限 / 计划控件之后。手机上这些控件通常折叠，视觉上就紧邻加号；桌面窄窗口下可能隔着权限选择器。
 
@@ -123,17 +123,22 @@ dsha-camera/
 
 三个关键点，全部是 Harness 的公开接口：
 
-1. **钩子位置**：`ctx.slots.inject('conversation.input.left', …)` 放按钮，`ctx.slots.inject('conversation.input.dock', …)` 放面板 —— 后者是「输入卡片上方的整宽插槽」，展开时把聊天区顶上去，正好是「拉长对话框」的效果。
+1. **钩子位置**：`ctx.slots.inject('conversation.input.left', …)` 放按钮；`ctx.slots.inject('shell.overlay', …)` 放面板 —— 后者是整窗最上层的浮动层，面板用 `position: fixed` 贴底，因此**不受输入区高度限制**（1.0.0 用的是 `conversation.input.dock`，手机上会把快门裁掉，1.0.1 换掉了）。
 2. **照片进草稿**：
    ```js
    const conversation = ctx.get('conversation')
    const drafts = conversation.createDrafts(sessionId, [file])   // 生成运行时草稿附件
    props.inputActions.addAttachments(drafts.map(d => d.id))      // 挂到当前草稿
    ```
-   这和官方「拖入/粘贴图片」走的是同一条路，所以缩略图、删除、发送、失败恢复全部由 Harness 自己处理。
+   这和官方「拖入/粘贴图片」走的是同一条路，所以缩略图、删除、发送、失败恢复全部由 Harness 自己处理。面板在浮层里拿不到 Session 的 props，所以按钮打开面板时把 `sessionId` 和 `inputActions` 一起交给面板。
 3. **摄像头**：`navigator.mediaDevices.getUserMedia` → `<video>` → `canvas.drawImage` → `canvas.toBlob('image/jpeg', 0.86)` → `new File(...)`。最长边压到 1600px，单张通常 200–500KB。
 
 改完代码**不需要构建**：重新安装或刷新页面即可（Client 模块由 Harness 的模块加载器直接执行）。调整画质改 `client.js` 顶部的 `MAX_EDGE` / `JPEG_QUALITY` 两个常量。
+
+## 更新记录
+
+- **1.0.1** —— 面板从「输入框上方插槽」改为「整窗浮层 + 底部抽屉」，修复手机上快门被输入区裁掉；补「相册里点左上角相机图标」的提示；「系统相机」在桌面端隐藏（那里它只是文件选择器）。
+- **1.0.0** —— 首个版本：加号右侧相机按钮、取景面板、照片直入草稿、中英双语。
 
 ## 隐私
 
@@ -184,10 +189,10 @@ MIT © 2026
 
 Sending "what I'm looking at" to the agent currently costs six steps: open the camera app, shoot, open the album, switch back to Harness, press `+`, find the photo. Every step pulls attention out of the conversation — and the photo stays in the album forever.
 
-**dsha-camera compresses that into one click.** A camera button sits next to the composer's `+`; it opens an **inline capture panel** (not a full-screen camera) right above the input card. Press the white shutter and the photo appears in the attachment rail of the draft — exactly as if you had dropped an image in — then you keep typing.
+**dsha-camera compresses that into one click.** A camera button sits next to the composer's `+`; it opens a **bottom-sheet capture panel** (not a full-screen camera) that slides up over a scrim. Press the white shutter and the photo appears in the attachment rail of the draft — exactly as if you had dropped an image in — then you keep typing.
 
 - 📷 **Camera button beside `+`** — part of the composer tool row, no floating bubble.
-- 🪟 **Expanding viewfinder, not a takeover** — the panel grows upward from the composer; the transcript stays visible and the viewfinder is a bounded band, not the whole screen.
+- 🪟 **Bottom-sheet viewfinder, not a takeover** — the panel rises from the bottom edge over a scrim; the viewfinder is a bounded band, not the whole screen, and a tap on the scrim, `Esc` or ✕ closes it.
 - 🖼️ **Straight into the draft** — through Harness's own attachment path (`createDrafts` + `addAttachments`), so it mixes with text and other images, and you can shoot several in a row.
 - 🚫 **Nothing written to the album, Downloads or a temp file** — the frame is encoded in memory as a `File`; after you press send, Harness stores it as a session attachment (that is what lets the model see it).
 - 🧩 **Dual-channel fallback** — hosts that grant camera access get the inline viewfinder; hosts that don't (e.g. current DSHA, see below) get the system camera / album inside the same panel.
@@ -212,18 +217,25 @@ Sending "what I'm looking at" to the agent currently costs six steps: open the c
 
 **"No local storage" means**: the plugin never downloads, never writes a temp file and never touches the album; the bytes live in memory until you press send. Harness then stores the image as a session attachment — otherwise the model could not read it. The camera track is stopped the moment the panel closes, including `Esc` and backgrounding the tab.
 
+**Why "system camera" sometimes opens the album first**: the only web-level request for the device camera is `<input type="file" accept="image/*" capture="environment">`, and `capture` is only a hint. DSHA's WebView routes that request to its own photo picker, which carries a camera tile in its top-left corner. Whether the host launches the camera directly is decided by its `onShowFileChooser` / `isCaptureEnabled()`, so a page cannot force it: a one-tap camera needs DSHA to honour `isCaptureEnabled`, or to grant `CAMERA` so the inline viewfinder works.
+
 ### How it works
 
 ```
 client.js
   ctx.slots.inject('conversation.input.left')  → camera button
-  ctx.slots.inject('conversation.input.dock')  → expanding panel above the composer
+  ctx.slots.inject('shell.overlay')            → frame-wide scrim + bottom sheet
   getUserMedia → <video> → canvas → toBlob('image/jpeg', .86) → File
   ctx.get('conversation').createDrafts(sessionId, [file])
   props.inputActions.addAttachments(ids)
 ```
 
 Editing needs no build: change `client.js`, reload the page. Tune `MAX_EDGE` and `JPEG_QUALITY` at the top of the file for quality versus size.
+
+### Changelog
+
+- **1.0.1** — the panel moved from the composer dock to a frame-wide overlay bottom sheet, fixing the shutter being clipped by the composer on phones; added the "tap the camera tile in the album" hint; hid the system-camera pill on desktop, where it is only a file dialog.
+- **1.0.0** — first release: camera button beside `+`, capture sheet, photo straight into the draft, bilingual copy.
 
 ### Publish
 
